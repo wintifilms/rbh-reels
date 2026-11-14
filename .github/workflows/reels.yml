@@ -28,16 +28,18 @@ jobs:
       - name: Preuzimanje repozitorija
         uses: actions/checkout@v4
 
-      - name: Instalacija alata i Montserrat fonta
+      - name: Instalacija alata, yt-dlp i Montserrat fonta
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg imagemagick curl jq librsvg2-bin fontconfig
+          sudo apt-get install -y ffmpeg imagemagick curl jq librsvg2-bin fontconfig python3-pip
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
           mkdir -p ~/.local/share/fonts
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-ExtraBold.ttf" -o ~/.local/share/fonts/Montserrat-ExtraBold.ttf
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Medium.ttf" -o ~/.local/share/fonts/Montserrat-Medium.ttf
           fc-cache -f -v
 
-      - name: Priprema slike, teksta i preuzimanje 320kbps isjecka pjesme
+      - name: Preuzimanje HD video spota, detekcija refrena i priprema teksta
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
           ARTIST_RAW: ${{ github.event.client_payload.artist || github.event.inputs.artist || 'RADIO BEGOV HAN' }}
@@ -45,68 +47,7 @@ jobs:
           STREAM_URL: ${{ github.event.client_payload.audio_stream_url || github.event.inputs.audio_stream_url || 'https://live.streamafrica.net/radiobegovhan' }}
           RUN_NUM: ${{ github.run_number }}
         run: |
-          DEFAULT_COVER="https://radiobegovhan.com/assets/radiobegovhan_cover.png"
-          FINAL_ARTWORK="$ARTWORK_URL"
-          if [ -z "$FINAL_ARTWORK" ] || [[ "$FINAL_ARTWORK" == *"radiobegovhan_cover.png"* ]]; then
-            FINAL_ARTWORK="$DEFAULT_COVER"
-          fi
-
-          ENCODED_URL=$(jq -rn --arg x "$FINAL_ARTWORK" '$x|@uri')
-          ENCODED_FALLBACK=$(jq -rn --arg x "$DEFAULT_COVER" '$x|@uri')
-
-          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1080&fit=contain&bg=00000000&output=png" -o cover_full.png
-          if [ ! -s cover_full.png ]; then
-            curl -L -s "https://wsrv.nl/?url=${ENCODED_FALLBACK}&w=1080&h=1080&fit=contain&bg=00000000&output=png" -o cover_full.png
-          fi
-
-          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
-          if [ ! -s bg_raw.png ]; then
-            curl -L -s "https://wsrv.nl/?url=${ENCODED_FALLBACK}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
-          fi
-
-          # 1. Pretraga originalnog isjecka pjesme (iTunes API -> Deezer API) i konverzija u 320kbps (25 sekundi)
-          SEARCH_QUERY="${ARTIST_RAW} ${SONG_RAW}"
-          ENCODED_QUERY=$(jq -rn --arg x "$SEARCH_QUERY" '$x|@uri')
-          PREVIEW_URL=""
-
-          if [[ "$ARTIST_RAW" != "RADIO BEGOV HAN" ]] && [[ "$ARTIST_RAW" != "Radio Begov Han" ]]; then
-            echo "Trazim originalni audio preview za: $SEARCH_QUERY"
-            ITUNES_RES=$(curl -s "https://itunes.apple.com/search?term=${ENCODED_QUERY}&media=music&entity=song&limit=1")
-            PREVIEW_URL=$(echo "$ITUNES_RES" | jq -r '.results[0].previewUrl // empty')
-
-            if [ -z "$PREVIEW_URL" ]; then
-              DEEZER_RES=$(curl -s "https://api.deezer.com/search?q=${ENCODED_QUERY}&limit=1")
-              PREVIEW_URL=$(echo "$DEEZER_RES" | jq -r '.data[0].preview // empty')
-            fi
-          fi
-
-          if [ -n "$PREVIEW_URL" ]; then
-            echo "Pronadjen originalni preview pjesme: $PREVIEW_URL"
-            curl -L -s "$PREVIEW_URL" -o preview_raw.tmp
-            if [ -s preview_raw.tmp ]; then
-              ffmpeg -y -i preview_raw.tmp -t 25 -af "afade=t=in:st=0:d=0.5,afade=t=out:st=24.0:d=1.0" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
-            fi
-          fi
-
-          # 2. Rezerva: Snimanje radio streama ako pjesma nema preview na iTunes/Deezeru
-          if [ ! -s audio.m4a ]; then
-            echo "Preview nije pronadjen. Snimam 25 sekundi sa radio streama: $STREAM_URL"
-            ffmpeg -y -i "$STREAM_URL" -t 25 -af "afade=t=in:st=0:d=0.5,afade=t=out:st=24.0:d=1.0" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
-          fi
-
-          # 3. Krajnja rezerva: MP3 dzingl sa GitHuba
-          if [ ! -s audio.m4a ]; then
-            mapfile -t JINGLES < <(find . -maxdepth 2 -iname "*.mp3" | sort)
-            NUM_JINGLES=${#JINGLES[@]}
-            if [ "$NUM_JINGLES" -gt 0 ]; then
-              INDEX=$(( (RUN_NUM - 1) % NUM_JINGLES ))
-              JINGLE_FILE="${JINGLES[$INDEX]}"
-              ffmpeg -y -i "$JINGLE_FILE" -t 25 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a
-            else
-              ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 320k audio.m4a
-            fi
-          fi
-
+          # 1. Priprema čistog teksta (Samo Izvođač i Naziv pjesme, bez ikakvih pozadina)
           clean_xml() {
             echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
           }
@@ -119,38 +60,184 @@ jobs:
           cat << EOF > overlay.svg
           <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
             <defs>
-              <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
-                <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#000000" flood-opacity="0.55"/>
+              <filter id="cleanShadow" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.75"/>
               </filter>
             </defs>
-            <g text-anchor="middle" font-family="Montserrat, sans-serif" filter="url(#textShadow)">
-              <text x="540" y="1335" font-weight="800" font-size="42" fill="#FFFFFF" fill-opacity="0.98" letter-spacing="4">${ARTIST_SAFE}</text>
-              <text x="540" y="1395" font-weight="500" font-size="29" fill="#FFFFFF" fill-opacity="0.90" letter-spacing="2">${SONG_SAFE}</text>
+            <g text-anchor="middle" font-family="Montserrat, sans-serif" filter="url(#cleanShadow)">
+              <text x="540" y="1420" font-weight="800" font-size="42" fill="#FFFFFF" letter-spacing="3">${ARTIST_SAFE}</text>
+              <text x="540" y="1480" font-weight="500" font-size="30" fill="#FFFFFF" letter-spacing="1.5">${SONG_SAFE}</text>
             </g>
           </svg>
           EOF
 
           rsvg-convert -w 1080 -h 1920 overlay.svg -o overlay.png
 
-      - name: Renderovanje 1080x1920 Full HD Reelsa sa modernim frekvencijskim ekvilajzerom
-        run: |
-          ffmpeg -y \
-            -loop 1 -r 30 -i bg_raw.png \
-            -loop 1 -r 30 -i cover_full.png \
-            -loop 1 -r 30 -i overlay.png \
-            -i audio.m4a \
-            -filter_complex "\
-              [0:v]gblur=sigma=55,eq=brightness=-0.12:saturation=1.25[bg]; \
-              [3:a]showfreqs=s=860x130:mode=bar:ascale=cbrt:fscale=log:win_size=2048:colors=0xffffff@0.95,format=rgba,split[eq_sharp][eq_blur]; \
-              [eq_blur]gblur=sigma=8[eq_glow]; \
-              [eq_glow][eq_sharp]overlay=0:0:format=auto[eq_final]; \
-              [bg][1:v]overlay=0:160:format=auto[tmp1]; \
-              [tmp1][2:v]overlay=0:0:format=auto[tmp2]; \
-              [tmp2][eq_final]overlay=(W-w)/2:1430:format=auto,format=yuv420p[v]" \
-            -map "[v]" -map 3:a \
-            -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
-            -c:a aac -b:a 320k \
-            -shortest -movflags +faststart reel.mp4
+          # 2. Pretraga zvaničnog HD spota i detekcija tačnog refrena (Heatmap / Peak)
+          VIDEO_READY=0
+          if [[ "$ARTIST_RAW" != "RADIO BEGOV HAN" ]] && [[ "$ARTIST_RAW" != "Radio Begov Han" ]]; then
+            echo "Tražim HD video spot i refren za: $ARTIST_RAW - $SONG_RAW"
+            cat << 'PYEOF' > find_chorus.py
+          import subprocess, json, os, sys
+
+          artist = os.environ.get("ARTIST_RAW", "")
+          song = os.environ.get("SONG_RAW", "")
+          query = f"ytsearch3:{artist} {song} official video"
+
+          try:
+              cmd = ["yt-dlp", "--dump-json", "--no-playlist", "--geo-bypass", query]
+              res = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+              lines = [l for l in res.stdout.strip().split('\n') if l.strip()]
+
+              chosen = None
+              for line in lines:
+                  data = json.loads(line)
+                  dur = data.get("duration", 0)
+                  height = data.get("height", 0) or 0
+                  if 90 <= dur <= 480 and height >= 720:
+                      chosen = data
+                      break
+              if not chosen and lines:
+                  data = json.loads(lines[0])
+                  if 60 <= data.get("duration", 0) <= 600:
+                      chosen = data
+
+              if not chosen:
+                  sys.exit(1)
+
+              vid_url = chosen.get("webpage_url") or f"https://www.youtube.com/watch?v={chosen['id']}"
+              duration = float(chosen.get("duration", 180))
+
+              # Detekcija refrena preko YouTube Most Replayed (Heatmap) podataka
+              heatmap = chosen.get("heatmap")
+              start_time = None
+              if heatmap and isinstance(heatmap, list):
+                  valid_pts = [p for p in heatmap if 20 <= p.get("start_time", 0) <= (duration - 35)]
+                  if valid_pts:
+                      best_pt = max(valid_pts, key=lambda x: x.get("value", 0))
+                      start_time = max(0, best_pt.get("start_time", 45) - 2)
+
+              if start_time is None:
+                  start_time = min(max(duration * 0.28, 35), max(duration - 35, 0))
+
+              dl_cmd = [
+                  "yt-dlp", "--no-playlist", "--geo-bypass",
+                  "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
+                  "--merge-output-format", "mp4",
+                  "-o", "full_mv.mp4",
+                  vid_url
+              ]
+              subprocess.run(dl_cmd, check=True, timeout=120)
+
+              if not os.path.exists("full_mv.mp4") or os.path.getsize("full_mv.mp4") < 100000:
+                  sys.exit(1)
+
+              with open("start_time.txt", "w") as f:
+                  f.write(str( round(start_time, 2) ))
+              sys.exit(0)
+          except Exception as e:
+              print("Info:", e)
+              sys.exit(1)
+          PYEOF
+
+            if python3 find_chorus.py; then
+              START_SEC=$(cat start_time.txt)
+              echo "Izrezujem 25 sekundi refrena počevši od ${START_SEC}s..."
+              ffmpeg -y -ss "$START_SEC" -i full_mv.mp4 -t 25 \
+                -vf "fps=30" \
+                -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" \
+                -c:v libx264 -preset fast -crf 17 \
+                -c:a aac -b:a 320k -ar 44100 -ac 2 \
+                clip_mv.mp4 && VIDEO_READY=1 || VIDEO_READY=0
+            fi
+          fi
+
+          # 3. Renderovanje: Ako postoji HD video spot -> Full Screen 1080x1920 bez rezanja sa strana!
+          if [ "$VIDEO_READY" -eq 1 ] && [ -s clip_mv.mp4 ]; then
+            echo "Renderujem PRO Full-Screen Video Reels (1080x1920, kompletan spot vidljiv bez rezanja)..."
+            ffmpeg -y \
+              -i clip_mv.mp4 \
+              -loop 1 -r 30 -i overlay.png \
+              -filter_complex "\
+                [0:v]split=2[v_bg_in][v_fg_in]; \
+                [v_bg_in]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=45[v_bg]; \
+                [v_fg_in]scale=1080:1350:force_original_aspect_ratio=decrease[v_fg]; \
+                [v_bg][v_fg]overlay=(W-w)/2:(H-h)/2-80:format=auto[v_merged]; \
+                [v_merged][1:v]overlay=0:0:shortest=1:format=auto,format=yuv420p[v]" \
+              -map "[v]" -map 0:a \
+              -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
+              -c:a aac -b:a 320k -ar 44100 -ac 2 \
+              -shortest -movflags +faststart reel.mp4
+          else
+            echo "Video spot nije dostupan. Koristim sigurnosni PRO mod (HD Cover + 320kbps refren sa iTunes/Deezera)..."
+            DEFAULT_COVER="https://radiobegovhan.com/assets/radiobegovhan_cover.png"
+            FINAL_ARTWORK="$ARTWORK_URL"
+            if [ -z "$FINAL_ARTWORK" ] || [[ "$FINAL_ARTWORK" == *"radiobegovhan_cover.png"* ]]; then
+              FINAL_ARTWORK="$DEFAULT_COVER"
+            fi
+
+            ENCODED_URL=$(jq -rn --arg x "$FINAL_ARTWORK" '$x|@uri')
+            ENCODED_FALLBACK=$(jq -rn --arg x "$DEFAULT_COVER" '$x|@uri')
+
+            curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1080&fit=contain&bg=00000000&output=png" -o cover_full.png
+            if [ ! -s cover_full.png ]; then
+              curl -L -s "https://wsrv.nl/?url=${ENCODED_FALLBACK}&w=1080&h=1080&fit=contain&bg=00000000&output=png" -o cover_full.png
+            fi
+
+            curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
+            if [ ! -s bg_raw.png ]; then
+              curl -L -s "https://wsrv.nl/?url=${ENCODED_FALLBACK}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
+            fi
+
+            SEARCH_QUERY="${ARTIST_RAW} ${SONG_RAW}"
+            ENCODED_QUERY=$(jq -rn --arg x "$SEARCH_QUERY" '$x|@uri')
+            PREVIEW_URL=""
+
+            if [[ "$ARTIST_RAW" != "RADIO BEGOV HAN" ]] && [[ "$ARTIST_RAW" != "Radio Begov Han" ]]; then
+              ITUNES_RES=$(curl -s "https://itunes.apple.com/search?term=${ENCODED_QUERY}&media=music&entity=song&limit=1")
+              PREVIEW_URL=$(echo "$ITUNES_RES" | jq -r '.results[0].previewUrl // empty')
+              if [ -z "$PREVIEW_URL" ]; then
+                DEEZER_RES=$(curl -s "https://api.deezer.com/search?q=${ENCODED_QUERY}&limit=1")
+                PREVIEW_URL=$(echo "$DEEZER_RES" | jq -r '.data[0].preview // empty')
+              fi
+            fi
+
+            if [ -n "$PREVIEW_URL" ]; then
+              curl -L -s "$PREVIEW_URL" -o preview_raw.tmp
+              if [ -s preview_raw.tmp ]; then
+                ffmpeg -y -i preview_raw.tmp -t 25 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
+              fi
+            fi
+
+            if [ ! -s audio.m4a ]; then
+              ffmpeg -y -i "$STREAM_URL" -t 25 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
+            fi
+
+            if [ ! -s audio.m4a ]; then
+              mapfile -t JINGLES < <(find . -maxdepth 2 -iname "*.mp3" | sort)
+              NUM_JINGLES=${#JINGLES[@]}
+              if [ "$NUM_JINGLES" -gt 0 ]; then
+                INDEX=$(( (RUN_NUM - 1) % NUM_JINGLES ))
+                ffmpeg -y -i "${JINGLES[$INDEX]}" -t 25 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a
+              else
+                ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 320k audio.m4a
+              fi
+            fi
+
+            ffmpeg -y \
+              -loop 1 -r 30 -i bg_raw.png \
+              -loop 1 -r 30 -i cover_full.png \
+              -loop 1 -r 30 -i overlay.png \
+              -i audio.m4a \
+              -filter_complex "\
+                [0:v]gblur=sigma=50[bg]; \
+                [bg][1:v]overlay=(W-w)/2:220:format=auto[tmp1]; \
+                [tmp1][2:v]overlay=0:0:format=auto,format=yuv420p[v]" \
+              -map "[v]" -map 3:a \
+              -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
+              -c:a aac -b:a 320k -ar 44100 -ac 2 \
+              -shortest -movflags +faststart reel.mp4
+          fi
 
       - name: Objava direktno na Facebook Reels
         env:
