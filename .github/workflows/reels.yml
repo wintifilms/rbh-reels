@@ -41,11 +41,17 @@ jobs:
           SONG_RAW: ${{ github.event.client_payload.song || github.event.inputs.song || 'Tvoj ritam, tvoja muzika' }}
           RUN_NUM: ${{ github.run_number }}
         run: |
-          # 1. Preuzimanje CIJELE slike u punoj sirini 1080x1080 (fit=contain - NISTA SE NESIJECE)
+          # 1. Preuzimanje CIJELE slike u punoj sirini 1080x1080 sa prozirnom pozadinom (BEZ CRNE POZADINE I BEZ REZANJA)
           ENCODED_URL=$(jq -rn --arg x "$ARTWORK_URL" '$x|@uri')
-          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1080&fit=contain&bg=000000&output=png" -o cover_full.png
+          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1080&fit=contain&bg=00000000&output=png" -o cover_full.png
           if [ ! -s cover_full.png ]; then
-            curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_cover.png&w=1080&h=1080&fit=contain&bg=000000&output=png" -o cover_full.png
+            curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_cover.png&w=1080&h=1080&fit=contain&bg=00000000&output=png" -o cover_full.png
+          fi
+
+          # Preuzimanje pozadine iz iste slike da nema crnila okolo
+          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
+          if [ ! -s bg_raw.png ]; then
+            curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_cover.png&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
           fi
 
           # 2. Rotacija svih MP3 dzinglova po redu za svaki novi Reels
@@ -72,9 +78,14 @@ jobs:
 
           cat << EOF > overlay.svg
           <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
-            <g text-anchor="middle" font-family="Montserrat, sans-serif">
-              <text x="540" y="1335" font-weight="800" font-size="42" fill="#FFFFFF" fill-opacity="0.95" letter-spacing="4">${ARTIST_SAFE}</text>
-              <text x="540" y="1395" font-weight="500" font-size="29" fill="#FFFFFF" fill-opacity="0.80" letter-spacing="2">${SONG_SAFE}</text>
+            <defs>
+              <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="#000000" flood-opacity="0.55"/>
+              </filter>
+            </defs>
+            <g text-anchor="middle" font-family="Montserrat, sans-serif" filter="url(#textShadow)">
+              <text x="540" y="1335" font-weight="800" font-size="42" fill="#FFFFFF" fill-opacity="0.98" letter-spacing="4">${ARTIST_SAFE}</text>
+              <text x="540" y="1395" font-weight="500" font-size="29" fill="#FFFFFF" fill-opacity="0.90" letter-spacing="2">${SONG_SAFE}</text>
             </g>
           </svg>
           EOF
@@ -84,15 +95,16 @@ jobs:
       - name: Renderovanje 1080x1920 Full HD Reelsa sa modernim frekvencijskim ekvilajzerom
         run: |
           ffmpeg -y \
-            -f lavfi -i color=c=0x000000:s=1080x1920:r=30 \
+            -loop 1 -r 30 -i bg_raw.png \
             -loop 1 -r 30 -i cover_full.png \
             -loop 1 -r 30 -i overlay.png \
             -i audio.m4a \
             -filter_complex "\
-              [3:a]showfreqs=s=860x130:mode=bar:ascale=cbrt:fscale=log:win_size=2048:colors=0xffffff@0.90,format=rgba,split[eq_sharp][eq_blur]; \
+              [0:v]gblur=sigma=55,eq=brightness=-0.12:saturation=1.25[bg]; \
+              [3:a]showfreqs=s=860x130:mode=bar:ascale=cbrt:fscale=log:win_size=2048:colors=0xffffff@0.95,format=rgba,split[eq_sharp][eq_blur]; \
               [eq_blur]gblur=sigma=8[eq_glow]; \
               [eq_glow][eq_sharp]overlay=0:0:format=auto[eq_final]; \
-              [0:v][1:v]overlay=0:160:format=auto[tmp1]; \
+              [bg][1:v]overlay=0:160:format=auto[tmp1]; \
               [tmp1][2:v]overlay=0:0:format=auto[tmp2]; \
               [tmp2][eq_final]overlay=(W-w)/2:1430:format=auto,format=yuv420p[v]" \
             -map "[v]" -map 3:a \
