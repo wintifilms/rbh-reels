@@ -42,7 +42,7 @@ jobs:
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Medium.ttf" -o ~/.local/share/fonts/Montserrat-Medium.ttf
           fc-cache -f -v
 
-      - name: Preuzimanje HD video spota (Multi-Source Engine), detekcija refrena i priprema teksta
+      - name: Preuzimanje VERIFIKOVANOG HD spota, detekcija refrena i priprema teksta
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
           ARTIST_RAW: ${{ github.event.client_payload.artist || github.event.inputs.artist || 'RADIO BEGOV HAN' }}
@@ -76,27 +76,64 @@ jobs:
 
           rsvg-convert -w 1080 -h 1920 overlay.svg -o overlay.png
 
-          # 2. Multi-Source HD Video Finder (1. Apple Music M4V API -> 2. YouTube VR/iOS Bypass -> 3. Dailymotion HD API)
+          # 2. Hirurški precizan Video Finder sa STROGOM VERIFIKACIJOM IZVOĐAČA I PJESME
           VIDEO_READY=0
           if [[ "$ARTIST_RAW" != "RADIO BEGOV HAN" ]] && [[ "$ARTIST_RAW" != "Radio Begov Han" ]]; then
             cat << 'PYEOF' > fetch_video.py
-          import subprocess, json, os, sys, urllib.parse, requests
+          import subprocess, json, os, sys, re, urllib.parse, requests
 
-          artist = os.environ.get("ARTIST_RAW", "").strip()
-          song = os.environ.get("SONG_RAW", "").strip()
-          clean_artist = artist.split(",")[0].split("&")[0].split("feat")[0].split("ft")[0].strip()
-          search_term = f"{clean_artist} {song}".strip()
+          artist_raw = os.environ.get("ARTIST_RAW", "").strip()
+          song_raw = os.environ.get("SONG_RAW", "").strip()
 
-          print(f"Pretraga video spota za: {search_term}")
+          def normalize(text):
+              if not text: return ""
+              t = text.lower()
+              rep = {'č':'c','ć':'c','ž':'z','š':'s','đ':'dj'}
+              for k, v in rep.items():
+                  t = t.replace(k, v)
+              t = re.sub(r'\(.*?\)|\[.*?\]', ' ', t)
+              t = re.sub(r'[^a-z0-9\s]', ' ', t)
+              return re.sub(r'\s+', ' ', t).strip()
 
-          # IZVOR 1: Apple Music / iTunes Music Video API (Direktan Apple CDN .m4v HD preview - Nema blokada!)
+          # Izvlačimo glavne ključne riječi izvođača i pjesme koje MORAJU postojati u naslovu spota
+          main_artist = re.split(r',|feat\.|ft\.|&| x | i |\/', artist_raw, flags=re.IGNORECASE)[0].strip()
+          norm_artist = normalize(main_artist)
+          norm_song = normalize(song_raw)
+
+          artist_tokens = [w for w in norm_artist.split() if len(w) >= 3 and w not in ['band', 'bend', 'grupa', 'official']]
+          if not artist_tokens and norm_artist:
+              artist_tokens = [norm_artist.split()[0]]
+
+          song_tokens = [w for w in norm_song.split() if len(w) >= 3]
+          if not song_tokens and norm_song:
+              song_tokens = [norm_song.split()[0]]
+
+          # Zabranjene riječi (TV prilozi, vijesti, pijace, karaoke, reakcije, coveri)
+          BANNED_WORDS = ['vijesti', 'vesti', 'dnevnik', 'pijaca', 'buvljak', 'polovna roba pijaca', 'prilog', 'emisija', 'karaoke', 'instrumental', 'reaction', 'tutorial', 'parodija', 'uzivo iz']
+
+          def is_verified_music_video(cand_title, cand_channel=""):
+              combined = normalize(f"{cand_title} {cand_channel}")
+              for bw in BANNED_WORDS:
+                  if bw in combined and bw not in norm_song:
+                      return False
+              # MORA sadržavati ključnu riječ izvođača I ključnu riječ pjesme!
+              has_artist = any(t in combined for t in artist_tokens)
+              has_song = all(t in combined for t in song_tokens[:2]) if len(song_tokens) >= 2 else any(t in combined for t in song_tokens)
+              return has_artist and has_song
+
+          search_term = f"{main_artist} {song_raw}".strip()
+          print(f"Verifikovana pretraga spota za: '{main_artist}' - '{song_raw}'")
+
+          # IZVOR 1: Apple Music / iTunes Music Video API (Uz strogu provjeru imena izvođača i pjesme!)
           try:
-              itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(search_term)}&entity=musicVideo&limit=3"
-              r = requests.get(itunes_url, timeout=15).json()
+              itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(search_term)}&entity=musicVideo&limit=5"
+              r = requests.get(itunes_url, timeout=12).json()
               for item in r.get("results", []):
-                  preview_video = item.get("previewUrl")
-                  if preview_video and (".m4v" in preview_video or ".mp4" in preview_video):
-                      print(f"[Apple Music HD Video] Pronadjen zvanični spot: {preview_video}")
+                  it_artist = item.get("artistName", "")
+                  it_track = item.get("trackName", "")
+                  preview_video = item.get("previewUrl", "")
+                  if preview_video and is_verified_music_video(it_track, it_artist):
+                      print(f"[Apple Music VERIFIED] Pronadjen tacan spot: {it_artist} - {it_track}")
                       vid_data = requests.get(preview_video, timeout=30).content
                       if len(vid_data) > 500000:
                           with open("full_mv.mp4", "wb") as f:
@@ -105,67 +142,116 @@ jobs:
                               f.write("0")
                           sys.exit(0)
           except Exception as e:
-              print("Apple Music Video info:", e)
+              print("Apple Music info:", e)
 
-          # IZVOR 2: YouTube sa ugradjenim Android_VR / TV Bypass klijentom (Zaobilazi GitHub IP blokadu)
-          try:
-              yt_query = f"ytsearch2:{search_term} official video"
-              cmd = [
-                  "yt-dlp",
-                  "--extractor-args", "youtube:player_client=android_vr,tv,web_embedded",
-                  "--dump-json", "--no-playlist", "--geo-bypass",
-                  yt_query
-              ]
-              res = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
-              lines = [l for l in res.stdout.strip().split('\n') if l.strip()]
-              chosen = None
-              for line in lines:
-                  data = json.loads(line)
-                  dur = data.get("duration", 0) or 0
-                  if 70 <= dur <= 500:
-                      chosen = data
-                      break
-
-              if chosen:
-                  vid_url = chosen.get("webpage_url") or f"https://www.youtube.com/watch?v={chosen['id']}"
-                  duration = float(chosen.get("duration", 180))
-                  heatmap = chosen.get("heatmap")
-                  start_time = min(max(duration * 0.28, 35), max(duration - 35, 0))
-                  if heatmap and isinstance(heatmap, list):
-                      valid_pts = [p for p in heatmap if 20 <= p.get("start_time", 0) <= (duration - 35)]
-                      if valid_pts:
-                          best_pt = max(valid_pts, key=lambda x: x.get("value", 0))
-                          start_time = max(0, best_pt.get("start_time", 45) - 2)
-
-                  print(f"[YouTube Bypass] Preuzimam spot ({vid_url}) od {start_time}s...")
-                  dl_cmd = [
+          # IZVOR 2: YouTube multi-client pretraga (tv_embedded, ios, android_vr) sa strogom verifikacijom naslova
+          yt_clients = ["tv_embedded", "ios", "android_vr", "web_creator"]
+          for client in yt_clients:
+              try:
+                  yt_query = f"ytsearch5:{main_artist} {song_raw} official video"
+                  cmd = [
                       "yt-dlp",
-                      "--extractor-args", "youtube:player_client=android_vr,tv,web_embedded",
-                      "--no-playlist", "--geo-bypass",
-                      "--download-sections", f"*{int(start_time)}-{int(start_time)+27}",
-                      "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
-                      "--merge-output-format", "mp4",
-                      "-o", "full_mv.mp4",
-                      vid_url
+                      "--extractor-args", f"youtube:player_client={client}",
+                      "--dump-json", "--no-playlist", "--geo-bypass",
+                      yt_query
                   ]
-                  subprocess.run(dl_cmd, check=True, timeout=90)
-                  if os.path.exists("full_mv.mp4") and os.path.getsize("full_mv.mp4") > 200000:
-                      with open("start_time.txt", "w") as f:
-                          f.write("0")
-                      sys.exit(0)
-          except Exception as e:
-              print("YouTube Bypass info:", e)
+                  res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                  lines = [l for l in res.stdout.strip().split('\n') if l.strip()]
 
-          # IZVOR 3: Dailymotion Official API (Nikad ne blokira GitHub servere, pun Balkan katalog)
+                  chosen = None
+                  for line in lines:
+                      data = json.loads(line)
+                      dur = data.get("duration", 0) or 0
+                      title = data.get("title", "")
+                      uploader = data.get("uploader", "") or data.get("channel", "")
+                      if 75 <= dur <= 480 and is_verified_music_video(title, uploader):
+                          chosen = data
+                          break
+
+                  if chosen:
+                      vid_url = chosen.get("webpage_url") or f"https://www.youtube.com/watch?v={chosen['id']}"
+                      duration = float(chosen.get("duration", 180))
+                      heatmap = chosen.get("heatmap")
+                      start_time = min(max(duration * 0.28, 35), max(duration - 35, 0))
+                      if heatmap and isinstance(heatmap, list):
+                          valid_pts = [p for p in heatmap if 20 <= p.get("start_time", 0) <= (duration - 35)]
+                          if valid_pts:
+                              best_pt = max(valid_pts, key=lambda x: x.get("value", 0))
+                              start_time = max(0, best_pt.get("start_time", 45) - 2)
+
+                      print(f"[YouTube VERIFIED - {client}] Preuzimam tacan spot: {chosen.get('title')} (od {start_time}s)")
+                      dl_cmd = [
+                          "yt-dlp",
+                          "--extractor-args", f"youtube:player_client={client}",
+                          "--no-playlist", "--geo-bypass",
+                          "--download-sections", f"*{int(start_time)}-{int(start_time)+27}",
+                          "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
+                          "--merge-output-format", "mp4",
+                          "-o", "full_mv.mp4",
+                          vid_url
+                      ]
+                      subprocess.run(dl_cmd, check=True, timeout=75)
+                      if os.path.exists("full_mv.mp4") and os.path.getsize("full_mv.mp4") > 250000:
+                          with open("start_time.txt", "w") as f:
+                              f.write("0")
+                          sys.exit(0)
+              except Exception as e:
+                  print(f"YouTube ({client}) info:", e)
+
+          # IZVOR 3: Piped API YouTube Proxy mreža (Zaobilazi sve YouTube blokade na GitHubu i skida originalni YT spot)
+          piped_instances = [
+              "https://pipedapi.kavin.rocks",
+              "https://pipedapi.tokhmi.xyz",
+              "https://pipedapi.syncpundit.io",
+              "https://api.piped.projectsegfau.lt"
+          ]
+          for instance in piped_instances:
+              try:
+                  s_url = f"{instance}/search?q={urllib.parse.quote(search_term + ' official video')}&filter=videos"
+                  r = requests.get(s_url, timeout=10)
+                  if r.status_code != 200:
+                      continue
+                  items = r.json().get("items", [])
+                  for it in items[:5]:
+                      title = it.get("title", "")
+                      uploader = it.get("uploaderName", "")
+                      dur = it.get("duration", 0) or 0
+                      vid_id = it.get("url", "").replace("/watch?v=", "").strip()
+                      if 75 <= dur <= 480 and vid_id and is_verified_music_video(title, uploader):
+                          st_url = f"{instance}/streams/{vid_id}"
+                          st_res = requests.get(st_url, timeout=12).json()
+                          hls_url = st_res.get("hls")
+                          if hls_url:
+                              start_time = min(max(dur * 0.28, 35), max(dur - 35, 0))
+                              print(f"[Piped YT Proxy VERIFIED] Preuzimam spot: {title}")
+                              ff_cmd = [
+                                  "ffmpeg", "-y", "-ss", str(round(start_time, 2)),
+                                  "-i", hls_url, "-t", "26",
+                                  "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                                  "-c:a", "aac", "-b:a", "320k",
+                                  "full_mv.mp4"
+                              ]
+                              subprocess.run(ff_cmd, check=True, timeout=60)
+                              if os.path.exists("full_mv.mp4") and os.path.getsize("full_mv.mp4") > 250000:
+                                  with open("start_time.txt", "w") as f:
+                                      f.write("0")
+                                  sys.exit(0)
+              except Exception as e:
+                  print(f"Piped ({instance}) info:", e)
+
+          # IZVOR 4: Dailymotion Official API (SAMO kategorija 'music' + STROGA VERIFIKACIJA IMENA IZVOĐAČA I PJESME!)
           try:
-              dm_api = f"https://api.dailymotion.com/videos?search={urllib.parse.quote(search_term)}&fields=id,title,duration,url&limit=3"
+              dm_api = f"https://api.dailymotion.com/videos?search={urllib.parse.quote(search_term)}&channel=music&fields=id,title,owner.screenname,duration,url&limit=6"
               dm_res = requests.get(dm_api, timeout=15).json()
               for item in dm_res.get("list", []):
                   dur = float(item.get("duration", 0))
-                  if 70 <= dur <= 480:
+                  dm_title = item.get("title", "")
+                  dm_owner = item.get("owner.screenname", "")
+                  # Stroga provjera: naslov na Dailymotionu MORA sadržavati i ime pjevača i naziv pjesme!
+                  if 75 <= dur <= 480 and is_verified_music_video(dm_title, dm_owner):
                       dm_url = item.get("url")
                       start_time = min(max(dur * 0.28, 35), max(dur - 35, 0))
-                      print(f"[Dailymotion HD] Preuzimam spot: {dm_url}")
+                      print(f"[Dailymotion Music VERIFIED] Preuzimam tacan spot: {dm_title}")
                       dl_cmd = [
                           "yt-dlp", "--no-playlist", "--geo-bypass",
                           "-f", "best[height<=1080]/best",
@@ -180,22 +266,13 @@ jobs:
           except Exception as e:
               print("Dailymotion info:", e)
 
+          print("Nije pronadjen verifikovan video spot za ovu pjesmu.")
           sys.exit(1)
           PYEOF
 
             if python3 fetch_video.py; then
               START_SEC=$(cat start_time.txt)
-              echo "Pripremam 25 sekundi HD videa i provjeravam 320kbps refren audio..."
-
-              # Dohvatamo i zvanični 320kbps audio preview sa iTunes/Deezera ako želimo studijski zvuk
-              SEARCH_QUERY="${ARTIST_RAW} ${SONG_RAW}"
-              ENCODED_QUERY=$(jq -rn --arg x "$SEARCH_QUERY" '$x|@uri')
-              ITUNES_AUDIO=$(curl -s "https://itunes.apple.com/search?term=${ENCODED_QUERY}&media=music&entity=song&limit=1" | jq -r '.results[0].previewUrl // empty')
-              if [ -z "$ITUNES_AUDIO" ]; then
-                ITUNES_AUDIO=$(curl -s "https://api.deezer.com/search?q=${ENCODED_QUERY}&limit=1" | jq -r '.data[0].preview // empty')
-              fi
-
-              # Izrezujemo 25 sekundi iz preuzetog video spota
+              echo "Verifikovan spot preuzet! Izrezujem 25 sekundi refrena (od ${START_SEC}s)..."
               ffmpeg -y -ss "$START_SEC" -i full_mv.mp4 -t 25 \
                 -vf "fps=30" \
                 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" \
@@ -205,7 +282,7 @@ jobs:
             fi
           fi
 
-          # 3. Renderovanje: Ako postoji HD video spot -> Full Screen 1080x1920 bez rezanja sa strana!
+          # 3. Renderovanje: Ako postoji VERIFIKOVAN HD video spot -> Full Screen 1080x1920 bez rezanja sa strana!
           if [ "$VIDEO_READY" -eq 1 ] && [ -s clip_mv.mp4 ]; then
             echo "USPJEH! Renderujem PRO Full-Screen Video Reels (1080x1920, kompletan spot vidljiv bez rezanja)..."
             ffmpeg -y \
@@ -222,7 +299,7 @@ jobs:
               -c:a aac -b:a 320k -ar 44100 -ac 2 \
               -shortest -movflags +faststart reel.mp4
           else
-            echo "Pjesma nema zvanični video spot. Koristim PRO mod sa slikom i 320kbps refrenom..."
+            echo "Za ovu pjesmu ne postoji verifikovan spot. Aktiviram PRO mod sa HD omotom i 320kbps refrenom..."
             DEFAULT_COVER="https://radiobegovhan.com/assets/radiobegovhan_cover.png"
             FINAL_ARTWORK="$ARTWORK_URL"
             if [ -z "$FINAL_ARTWORK" ] || [[ "$FINAL_ARTWORK" == *"radiobegovhan_cover.png"* ]]; then
