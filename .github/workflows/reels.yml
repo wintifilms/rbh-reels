@@ -16,55 +16,49 @@ jobs:
   build_and_publish_reel:
     runs-on: ubuntu-latest
     steps:
-      - name: Preuzimanje jinglova iz repozitorija
+      - name: Preuzimanje repozitorija
         uses: actions/checkout@v4
 
-      - name: Instalacija FFmpeg-a, ImageMagick-a i Roboto fonta
+      - name: Instalacija FFmpeg-a, ImageMagick-a i Roboto fontova
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick curl jq fonts-roboto
 
-      - name: Priprema slike, 3D sjene i modernog TV potpisa
+      - name: Priprema slike i profesionalne grafike
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
         run: |
+          # 1. Preuzimanje slike pjesme uz fallback na default sliku ako ne postoji
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
-          
-          # Provjera da li postoji MP3 džingl, ako ne postoji kreira se tišina
+          if [ ! -s cover_raw.jpg ]; then
+            curl -L -s "https://radiobegovhan.com/assets/radiobegovhan_cover.png" -o cover_raw.jpg
+          fi
+
+          # 2. Priprema audio zapisa (džingl ili tišina)
           JINGLE_FILE=$(find . -maxdepth 1 -iname "*.mp3" | shuf -n 1)
           if [ -z "$JINGLE_FILE" ]; then
-            echo "Nije pronađen MP3 džingl, generišem zvukovni stream..."
             ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 192k audio.m4a
           else
-            echo "Koristim džingl: $JINGLE_FILE"
             ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
           fi
 
-          # 1. Omot pjesme sa zaobljenim uglovima i 3D sjenom
-          convert cover_raw.jpg -resize 820x820^ -gravity center -extent 820x820 \
-            \( +clone -alpha extract -draw 'fill black polygon 0,0 0,35 35,0 fill white circle 35,35 35,0' \
-               \( +clone -flip \) -compose Multiply -composite \
-               \( +clone -flop \) -compose Multiply -composite \
-            \) -alpha off -compose CopyOpacity -composite \
-            -bordercolor none -border 3 \
-            \( +clone -background black -shadow 75x28+0+18 \) +swap -background none -layers merge +repage cover_styled.png
+          # 3. Omot pjesme - oštar, visoka rezolucija sa elegantnim bijelim okvirom (bez bagovite crne sjene)
+          convert cover_raw.jpg -resize 800x800^ -gravity center -extent 800x800 \
+            -bordercolor "#FFFFFF" -border 4 cover_styled.png
 
-          # 2. Gornji "UŽIVO PROGRAM" bedž
-          convert -size 380x76 xc:none \
-            -fill "rgba(15, 15, 22, 0.78)" -stroke "rgba(255, 255, 255, 0.18)" -strokewidth 2 \
-            -draw "roundrectangle 2,2 378,74 38,38" \
-            -fill "#ff2a4b" -draw "circle 62,38 62,50" \
-            -font "Roboto-Bold" -pointsize 25 -fill white \
-            -gravity center -annotate +18+1 "UŽIVO PROGRAM" \
+          # 4. Gornji minimalistički UŽIVO bedž (Glassmorphism stil)
+          convert -size 480x64 xc:none \
+            -fill "rgba(0, 0, 0, 0.60)" -draw "roundrectangle 0,0 480,64 20,20" \
+            -fill "#FF2A4B" -draw "circle 35,32 35,42" \
+            -font "Roboto-Bold" -pointsize 22 -fill white \
+            -gravity center -annotate +12+0 "RADIO BEGOV HAN  •  UŽIVO" \
             live_badge.png
 
-          # 3. Donja kartica bez Pango zavisnosti
-          convert -size 860x210 xc:none \
-            -fill "rgba(12, 12, 18, 0.82)" -stroke "rgba(255, 255, 255, 0.16)" -strokewidth 2 \
-            -draw "roundrectangle 4,4 856,206 42,42" \
-            -stroke none -fill "#f5b041" -draw "roundrectangle 310,114 550,118 2,2" \
-            -font "Roboto-Black" -pointsize 37 -fill white -gravity north -annotate +0+34 "RADIO BEGOV HAN" \
-            -font "Roboto-Bold" -pointsize 22 -fill "#f5b041" -gravity south -annotate +0+34 "WWW.RADIOBEGOVHAN.COM" \
+          # 5. Donja brendirana kartica (Pro TV dizajn)
+          convert -size 720x100 xc:none \
+            -fill "rgba(0, 0, 0, 0.65)" -draw "roundrectangle 0,0 720,100 22,22" \
+            -font "Roboto-Bold" -pointsize 26 -fill white -gravity center -annotate +0+-14 "SLUŠAJTE UŽIVO 24/7" \
+            -font "Roboto-Medium" -pointsize 20 -fill "#F5B041" -gravity center -annotate +0+20 "www.radiobegovhan.com" \
             brand_card.png
 
       - name: Renderovanje 1080x1920 Full HD Reels videa
@@ -76,14 +70,14 @@ jobs:
             -loop 1 -i brand_card.png \
             -i audio.m4a \
             -filter_complex "\
-              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=55:25,eq=brightness=-0.32:saturation=1.25[bg]; \
-              [bg][2:v]overlay=(W-w)/2:135[tmp1]; \
-              [tmp1][1:v]overlay=(W-w)/2:245[tmp2]; \
-              [4:a]showwaves=s=740x110:mode=p2p:colors=0xf5b041@0.95|0xffffff@0.90:rate=30:scale=sqrt[waves]; \
-              [tmp2][waves]overlay=(W-w)/2:1150[tmp3]; \
-              [tmp3][3:v]overlay=(W-w)/2:1310,format=yuv420p[v]" \
+              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=40:15,eq=brightness=-0.30:saturation=1.20[bg]; \
+              [bg][2:v]overlay=(W-w)/2:220[tmp1]; \
+              [tmp1][1:v]overlay=(W-w)/2:360[tmp2]; \
+              [4:a]showwaves=s=780x100:mode=p2p:colors=0xf5b041@0.90|0xffffff@0.80:rate=30:scale=sqrt[waves]; \
+              [tmp2][waves]overlay=(W-w)/2:1210[tmp3]; \
+              [tmp3][3:v]overlay=(W-w)/2:1350,format=yuv420p[v]" \
             -map "[v]" -map 4:a \
-            -c:v libx264 -preset fast -crf 20 -r 30 \
+            -c:v libx264 -preset fast -crf 19 -r 30 \
             -c:a aac -b:a 192k \
             -shortest -movflags +faststart reel.mp4
 
@@ -94,7 +88,7 @@ jobs:
           CAPTION: ${{ github.event.client_payload.caption || github.event.inputs.caption }}
         run: |
           if [ -z "$PAGE_TOKEN" ]; then
-            echo "GREŠKA: FB_PAGE_TOKEN secret nije podešen u GitHub repozitoriju!"
+            echo "GREŠKA: FB_PAGE_TOKEN secret nije podešen!"
             exit 1
           fi
 
@@ -102,7 +96,6 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"upload_phase\":\"start\",\"access_token\":\"${PAGE_TOKEN}\"}")
           
-          echo "Init odgovor: $INIT_RES"
           VIDEO_ID=$(echo "$INIT_RES" | jq -r '.video_id // empty')
           UPLOAD_URL=$(echo "$INIT_RES" | jq -r '.upload_url // empty')
 
