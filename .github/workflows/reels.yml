@@ -19,39 +19,34 @@ jobs:
       - name: Preuzimanje jinglova iz repozitorija
         uses: actions/checkout@v4
 
-      - name: Instalacija FFmpeg-a i alata
+      - name: Instalacija FFmpeg-a i Roboto fonta
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl jq
+          sudo apt-get install -y ffmpeg curl jq fonts-roboto
 
-      - name: Priprema slika i odabir nasumicnog Radio Begov Han jingla
+      - name: Priprema slike i odabir nasumicnog Radio Begov Han jingla
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
         run: |
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
-          curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_logo.png&trim=10&w=320&output=png" -o logo.png
-          
-          # Nasumično bira jedan od tvoja 4 MP3 jingla iz repozitorija
           JINGLE_FILE=$(find . -maxdepth 1 -iname "*.mp3" | shuf -n 1)
           echo "Odabrani jingle: $JINGLE_FILE"
-          
-          # Pretvara odabrani jingle u čist AAC audio (maksimalno do 25 sekundi)
           ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
 
-      - name: Renderovanje 1080x1920 Full HD Reels videa sa zvukom i valovima
+      - name: Renderovanje 1080x1920 Full HD Reels videa sa Roboto potpisom
         run: |
           ffmpeg -y \
             -loop 1 -i cover_raw.jpg \
-            -i logo.png \
             -i audio.m4a \
             -filter_complex "\
-              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=45:20,eq=brightness=-0.28[bg]; \
+              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=45:20,eq=brightness=-0.30[bg]; \
               [0:v]scale=900:900:force_original_aspect_ratio=decrease,pad=908:908:4:4:color=white@0.85[fg]; \
-              [bg][fg]overlay=(W-w)/2:(H-h)/2-60[tmp1]; \
-              [tmp1][1:v]overlay=(W-w)/2:140[tmp2]; \
-              [2:a]showwaves=s=640x140:mode=cline:colors=white@0.90:rate=30[waves]; \
-              [tmp2][waves]overlay=(W-w)/2:1560,format=yuv420p[v]" \
-            -map "[v]" -map 2:a \
+              [bg][fg]overlay=(W-w)/2:280[tmp1]; \
+              [1:a]showwaves=s=640x130:mode=cline:colors=white@0.90:rate=30[waves]; \
+              [tmp1][waves]overlay=(W-w)/2:1300[tmp2]; \
+              [tmp2]drawtext=fontfile=/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Bold.ttf:text='RADIO BEGOV HAN':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=1520:shadowcolor=black@0.8:shadowx=0:shadowy=3, \
+              drawtext=fontfile=/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Regular.ttf:text='www.radiobegovhan.com':fontcolor=white@0.9:fontsize=32:x=(w-text_w)/2:y=1590:shadowcolor=black@0.8:shadowx=0:shadowy=2,format=yuv420p[v]" \
+            -map "[v]" -map 1:a \
             -c:v libx264 -preset fast -crf 20 -r 30 \
             -c:a aac -b:a 192k \
             -shortest -movflags +faststart reel.mp4
@@ -68,7 +63,6 @@ jobs:
           
           VIDEO_ID=$(echo "$INIT_RES" | jq -r '.video_id')
           UPLOAD_URL=$(echo "$INIT_RES" | jq -r '.upload_url')
-          echo "Video ID: $VIDEO_ID"
 
           FILE_SIZE=$(stat -c%s reel.mp4)
           curl -s -X POST "$UPLOAD_URL" \
