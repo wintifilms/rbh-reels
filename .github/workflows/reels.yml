@@ -28,13 +28,13 @@ jobs:
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
         run: |
-          # 1. Preuzimanje slike pjesme uz fallback na default sliku ako ne postoji
+          # 1. Preuzimanje slike pjesme
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
           if [ ! -s cover_raw.jpg ]; then
             curl -L -s "https://radiobegovhan.com/assets/radiobegovhan_cover.png" -o cover_raw.jpg
           fi
 
-          # 2. Priprema audio zapisa (džingl ili tišina)
+          # 2. Priprema audio zapisa
           JINGLE_FILE=$(find . -maxdepth 1 -iname "*.mp3" | shuf -n 1)
           if [ -z "$JINGLE_FILE" ]; then
             ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 192k audio.m4a
@@ -42,24 +42,26 @@ jobs:
             ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
           fi
 
-          # 3. Omot pjesme - oštar, visoka rezolucija sa elegantnim bijelim okvirom (bez bagovite crne sjene)
+          # 3. Omot pjesme - HD čisto sa bijelim okvirom
           convert cover_raw.jpg -resize 800x800^ -gravity center -extent 800x800 \
-            -bordercolor "#FFFFFF" -border 4 cover_styled.png
+            -bordercolor "#FFFFFF" -border 3 cover_styled.png
 
-          # 4. Gornji minimalistički UŽIVO bedž (Glassmorphism stil)
-          convert -size 480x64 xc:none \
-            -fill "rgba(0, 0, 0, 0.60)" -draw "roundrectangle 0,0 480,64 20,20" \
-            -fill "#FF2A4B" -draw "circle 35,32 35,42" \
-            -font "Roboto-Bold" -pointsize 22 -fill white \
-            -gravity center -annotate +12+0 "RADIO BEGOV HAN  •  UŽIVO" \
+          # 4. Gornji Pro UŽIVO bedž
+          convert -size 460x60 xc:none \
+            -fill "rgba(255, 255, 255, 0.12)" -stroke "rgba(255, 255, 255, 0.25)" -strokewidth 1 \
+            -draw "roundrectangle 0,0 460,60 30,30" \
+            -fill "#FF2A4B" -draw "circle 35,30 35,40" \
+            -font "Roboto-Bold" -pointsize 20 -fill white \
+            -gravity center -annotate +12+0 "UŽIVO PROGRAM" \
             live_badge.png
 
-          # 5. Donja brendirana kartica (Pro TV dizajn)
-          convert -size 720x100 xc:none \
-            -fill "rgba(0, 0, 0, 0.65)" -draw "roundrectangle 0,0 720,100 22,22" \
-            -font "Roboto-Bold" -pointsize 26 -fill white -gravity center -annotate +0+-14 "SLUŠAJTE UŽIVO 24/7" \
-            -font "Roboto-Medium" -pointsize 20 -fill "#F5B041" -gravity center -annotate +0+20 "www.radiobegovhan.com" \
-            brand_card.png
+          # 5. Prozirno-bijeli elegantni logo naslov u Roboto fontu
+          convert -size 640x70 xc:none \
+            -fill "rgba(255, 255, 255, 0.14)" -stroke "rgba(255, 255, 255, 0.30)" -strokewidth 1 \
+            -draw "roundrectangle 0,0 640,70 35,35" \
+            -font "Roboto-Bold" -pointsize 24 -fill "#FFFFFF" \
+            -gravity center -annotate +0+0 "R A D I O   B E G O V   H A N" \
+            brand_tag.png
 
       - name: Renderovanje 1080x1920 Full HD Reels videa
         run: |
@@ -67,15 +69,15 @@ jobs:
             -loop 1 -i cover_raw.jpg \
             -loop 1 -i cover_styled.png \
             -loop 1 -i live_badge.png \
-            -loop 1 -i brand_card.png \
+            -loop 1 -i brand_tag.png \
             -i audio.m4a \
             -filter_complex "\
-              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=40:15,eq=brightness=-0.30:saturation=1.20[bg]; \
-              [bg][2:v]overlay=(W-w)/2:220[tmp1]; \
-              [tmp1][1:v]overlay=(W-w)/2:360[tmp2]; \
-              [4:a]showwaves=s=780x100:mode=p2p:colors=0xf5b041@0.90|0xffffff@0.80:rate=30:scale=sqrt[waves]; \
-              [tmp2][waves]overlay=(W-w)/2:1210[tmp3]; \
-              [tmp3][3:v]overlay=(W-w)/2:1350,format=yuv420p[v]" \
+              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=45:18,eq=brightness=-0.28:saturation=1.25[bg]; \
+              [bg][2:v]overlay=(W-w)/2:190[tmp1]; \
+              [tmp1][1:v]overlay=(W-w)/2:290[tmp2]; \
+              [tmp2][3:v]overlay=(W-w)/2:1130[tmp3]; \
+              [4:a]showwaves=s=880x220:mode=cline:colors=0xffffff@0.95|0xf5b041@0.85:rate=30:scale=sqrt[waves]; \
+              [tmp3][waves]overlay=(W-w)/2:1240,format=yuv420p[v]" \
             -map "[v]" -map 4:a \
             -c:v libx264 -preset fast -crf 19 -r 30 \
             -c:a aac -b:a 192k \
