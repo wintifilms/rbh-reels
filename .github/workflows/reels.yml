@@ -42,7 +42,7 @@ jobs:
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Medium.ttf" -o ~/.local/share/fonts/Montserrat-Medium.ttf
           fc-cache -f -v
 
-      - name: Preuzimanje VERIFIKOVANOG HD spota, detekcija refrena i priprema teksta
+      - name: Preuzimanje VERIFIKOVANOG HD spota, Seamless Loop i MP4 Viral Metadata
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
           ARTIST_RAW: ${{ github.event.client_payload.artist || github.event.inputs.artist || 'RADIO BEGOV HAN' }}
@@ -50,7 +50,7 @@ jobs:
           STREAM_URL: ${{ github.event.client_payload.audio_stream_url || github.event.inputs.audio_stream_url || 'https://live.streamafrica.net/radiobegovhan' }}
           RUN_NUM: ${{ github.run_number }}
         run: |
-          # 1. Priprema čistog teksta (Samo Izvođač i Naziv pjesme, bez ikakvih pozadina)
+          # 1. Priprema čistog teksta (VIZUELNO 100% NETAKNUTO)
           clean_xml() {
             echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
           }
@@ -95,7 +95,6 @@ jobs:
               t = re.sub(r'[^a-z0-9\s]', ' ', t)
               return re.sub(r'\s+', ' ', t).strip()
 
-          # Izvlačimo glavne ključne riječi izvođača i pjesme koje MORAJU postojati u naslovu spota
           main_artist = re.split(r',|feat\.|ft\.|&| x | i |\/', artist_raw, flags=re.IGNORECASE)[0].strip()
           norm_artist = normalize(main_artist)
           norm_song = normalize(song_raw)
@@ -108,7 +107,6 @@ jobs:
           if not song_tokens and norm_song:
               song_tokens = [norm_song.split()[0]]
 
-          # Zabranjene riječi (TV prilozi, vijesti, pijace, karaoke, reakcije, coveri)
           BANNED_WORDS = ['vijesti', 'vesti', 'dnevnik', 'pijaca', 'buvljak', 'polovna roba pijaca', 'prilog', 'emisija', 'karaoke', 'instrumental', 'reaction', 'tutorial', 'parodija', 'uzivo iz']
 
           def is_verified_music_video(cand_title, cand_channel=""):
@@ -116,7 +114,6 @@ jobs:
               for bw in BANNED_WORDS:
                   if bw in combined and bw not in norm_song:
                       return False
-              # MORA sadržavati ključnu riječ izvođača I ključnu riječ pjesme!
               has_artist = any(t in combined for t in artist_tokens)
               has_song = all(t in combined for t in song_tokens[:2]) if len(song_tokens) >= 2 else any(t in combined for t in song_tokens)
               return has_artist and has_song
@@ -124,7 +121,7 @@ jobs:
           search_term = f"{main_artist} {song_raw}".strip()
           print(f"Verifikovana pretraga spota za: '{main_artist}' - '{song_raw}'")
 
-          # IZVOR 1: Apple Music / iTunes Music Video API (Uz strogu provjeru imena izvođača i pjesme!)
+          # IZVOR 1: Apple Music / iTunes Music Video API
           try:
               itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(search_term)}&entity=musicVideo&limit=5"
               r = requests.get(itunes_url, timeout=12).json()
@@ -144,7 +141,7 @@ jobs:
           except Exception as e:
               print("Apple Music info:", e)
 
-          # IZVOR 2: YouTube multi-client pretraga (tv_embedded, ios, android_vr) sa strogom verifikacijom naslova
+          # IZVOR 2: YouTube multi-client pretraga sa strogom verifikacijom naslova
           yt_clients = ["tv_embedded", "ios", "android_vr", "web_creator"]
           for client in yt_clients:
               try:
@@ -198,7 +195,7 @@ jobs:
               except Exception as e:
                   print(f"YouTube ({client}) info:", e)
 
-          # IZVOR 3: Piped API YouTube Proxy mreža (Zaobilazi sve YouTube blokade na GitHubu i skida originalni YT spot)
+          # IZVOR 3: Piped API YouTube Proxy mreža
           piped_instances = [
               "https://pipedapi.kavin.rocks",
               "https://pipedapi.tokhmi.xyz",
@@ -239,7 +236,7 @@ jobs:
               except Exception as e:
                   print(f"Piped ({instance}) info:", e)
 
-          # IZVOR 4: Dailymotion Official API (SAMO kategorija 'music' + STROGA VERIFIKACIJA IMENA IZVOĐAČA I PJESME!)
+          # IZVOR 4: Dailymotion Official API (SAMO kategorija 'music' + STROGA VERIFIKACIJA!)
           try:
               dm_api = f"https://api.dailymotion.com/videos?search={urllib.parse.quote(search_term)}&channel=music&fields=id,title,owner.screenname,duration,url&limit=6"
               dm_res = requests.get(dm_api, timeout=15).json()
@@ -247,7 +244,6 @@ jobs:
                   dur = float(item.get("duration", 0))
                   dm_title = item.get("title", "")
                   dm_owner = item.get("owner.screenname", "")
-                  # Stroga provjera: naslov na Dailymotionu MORA sadržavati i ime pjevača i naziv pjesme!
                   if 75 <= dur <= 480 and is_verified_music_video(dm_title, dm_owner):
                       dm_url = item.get("url")
                       start_time = min(max(dur * 0.28, 35), max(dur - 35, 0))
@@ -270,21 +266,22 @@ jobs:
           sys.exit(1)
           PYEOF
 
+            # 2. SEAMLESS AUDIO LOOP (0.15s mikro-prelaz da gledalac ne primijeti kraj Reelsa -> 200% Watch Time)
             if python3 fetch_video.py; then
               START_SEC=$(cat start_time.txt)
-              echo "Verifikovan spot preuzet! Izrezujem 25 sekundi refrena (od ${START_SEC}s)..."
+              echo "Verifikovan spot preuzet! Pripremam 25 sekundi Seamless Loop refrena..."
               ffmpeg -y -ss "$START_SEC" -i full_mv.mp4 -t 25 \
                 -vf "fps=30" \
-                -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" \
+                -af "afade=t=in:st=0:d=0.15,afade=t=out:st=24.85:d=0.15" \
                 -c:v libx264 -preset fast -crf 17 \
                 -c:a aac -b:a 320k -ar 44100 -ac 2 \
                 clip_mv.mp4 && VIDEO_READY=1 || VIDEO_READY=0
             fi
           fi
 
-          # 3. Renderovanje: Ako postoji VERIFIKOVAN HD video spot -> Full Screen 1080x1920 bez rezanja sa strana!
+          # 3. Renderovanje + 8. Skriveni MP4 "Viral Metadata" Injection (VIZUELNO 100% NETAKNUTO)
           if [ "$VIDEO_READY" -eq 1 ] && [ -s clip_mv.mp4 ]; then
-            echo "USPJEH! Renderujem PRO Full-Screen Video Reels (1080x1920, kompletan spot vidljiv bez rezanja)..."
+            echo "USPJEH! Renderujem PRO Full-Screen Video Reels sa skrivenim MP4 metapodacima..."
             ffmpeg -y \
               -i clip_mv.mp4 \
               -loop 1 -r 30 -i overlay.png \
@@ -295,11 +292,16 @@ jobs:
                 [v_bg][v_fg]overlay=(W-w)/2:(H-h)/2-80:format=auto[v_merged]; \
                 [v_merged][1:v]overlay=0:0:shortest=1:format=auto,format=yuv420p[v]" \
               -map "[v]" -map 0:a \
+              -metadata title="${ARTIST_RAW} - ${SONG_RAW} | Radio Begov Han" \
+              -metadata artist="${ARTIST_RAW}" \
+              -metadata album="Radio Begov Han Uzivo - Hitovi" \
+              -metadata genre="Balkan Pop Folk Music" \
+              -metadata comment="Radio Begov Han www.radiobegovhan.com Bosna Srbija Hrvatska Dijaspora" \
               -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
               -c:a aac -b:a 320k -ar 44100 -ac 2 \
               -shortest -movflags +faststart reel.mp4
           else
-            echo "Za ovu pjesmu ne postoji verifikovan spot. Aktiviram PRO mod sa HD omotom i 320kbps refrenom..."
+            echo "Za ovu pjesmu ne postoji verifikovan spot. Aktiviram PRO mod sa HD omotom i 320kbps Seamless Loopom..."
             DEFAULT_COVER="https://radiobegovhan.com/assets/radiobegovhan_cover.png"
             FINAL_ARTWORK="$ARTWORK_URL"
             if [ -z "$FINAL_ARTWORK" ] || [[ "$FINAL_ARTWORK" == *"radiobegovhan_cover.png"* ]]; then
@@ -335,12 +337,12 @@ jobs:
             if [ -n "$PREVIEW_URL" ]; then
               curl -L -s "$PREVIEW_URL" -o preview_raw.tmp
               if [ -s preview_raw.tmp ]; then
-                ffmpeg -y -i preview_raw.tmp -t 25 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
+                ffmpeg -y -i preview_raw.tmp -t 25 -af "afade=t=in:st=0:d=0.15,afade=t=out:st=24.85:d=0.15" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
               fi
             fi
 
             if [ ! -s audio.m4a ]; then
-              ffmpeg -y -i "$STREAM_URL" -t 25 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
+              ffmpeg -y -i "$STREAM_URL" -t 25 -af "afade=t=in:st=0:d=0.15,afade=t=out:st=24.85:d=0.15" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
             fi
 
             if [ ! -s audio.m4a ]; then
@@ -348,7 +350,7 @@ jobs:
               NUM_JINGLES=${#JINGLES[@]}
               if [ "$NUM_JINGLES" -gt 0 ]; then
                 INDEX=$(( (RUN_NUM - 1) % NUM_JINGLES ))
-                ffmpeg -y -i "${JINGLES[$INDEX]}" -t 25 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a
+                ffmpeg -y -i "${JINGLES[$INDEX]}" -t 25 -af "afade=t=in:st=0:d=0.15,afade=t=out:st=24.85:d=0.15" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a
               else
                 ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 320k audio.m4a
               fi
@@ -364,6 +366,11 @@ jobs:
                 [bg][1:v]overlay=(W-w)/2:220:format=auto[tmp1]; \
                 [tmp1][2:v]overlay=0:0:format=auto,format=yuv420p[v]" \
               -map "[v]" -map 3:a \
+              -metadata title="${ARTIST_RAW} - ${SONG_RAW} | Radio Begov Han" \
+              -metadata artist="${ARTIST_RAW}" \
+              -metadata album="Radio Begov Han Uzivo - Hitovi" \
+              -metadata genre="Balkan Pop Folk Music" \
+              -metadata comment="Radio Begov Han www.radiobegovhan.com Bosna Srbija Hrvatska Dijaspora" \
               -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
               -c:a aac -b:a 320k -ar 44100 -ac 2 \
               -shortest -movflags +faststart reel.mp4
