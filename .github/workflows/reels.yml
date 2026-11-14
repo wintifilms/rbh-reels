@@ -17,6 +17,9 @@ on:
       song:
         description: 'Naziv pjesme'
         required: false
+      audio_stream_url:
+        description: 'Audio Stream URL'
+        required: false
 
 jobs:
   build_and_publish_reel:
@@ -34,26 +37,18 @@ jobs:
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Medium.ttf" -o ~/.local/share/fonts/Montserrat-Medium.ttf
           fc-cache -f -v
 
-      - name: Priprema cijele slike (bez rezanja), teksta i audio podloge (iTunes + Dzingl)
+      - name: Priprema slike, teksta i snimanja STVARNOG streama
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
           ARTIST_RAW: ${{ github.event.client_payload.artist || github.event.inputs.artist || 'RADIO BEGOV HAN' }}
           SONG_RAW: ${{ github.event.client_payload.song || github.event.inputs.song || 'Tvoj ritam, tvoja muzika' }}
+          STREAM_URL: ${{ github.event.client_payload.audio_stream_url || github.event.inputs.audio_stream_url || 'https://live.streamafrica.net/radiobegovhan' }}
           RUN_NUM: ${{ github.run_number }}
         run: |
           DEFAULT_COVER="https://radiobegovhan.com/assets/radiobegovhan_cover.png"
-          SEARCH_TERM=$(jq -rn --arg x "${ARTIST_RAW} ${SONG_RAW}" '$x|@uri')
-          ITUNES_JSON=$(curl -s "https://itunes.apple.com/search?term=${SEARCH_TERM}&media=music&entity=song&limit=1")
-
-          # 1. Odabir najbolje slike (ako nema, trazi na iTunesu, a ako ni tamo nema koristi rezervnu sliku)
           FINAL_ARTWORK="$ARTWORK_URL"
           if [ -z "$FINAL_ARTWORK" ] || [[ "$FINAL_ARTWORK" == *"radiobegovhan_cover.png"* ]]; then
-            ITUNES_ART=$(echo "$ITUNES_JSON" | jq -r '.results[0].artworkUrl100 // empty' | sed 's/100x100bb/1000x1000bb/g')
-            if [ -n "$ITUNES_ART" ]; then
-              FINAL_ARTWORK="$ITUNES_ART"
-            else
-              FINAL_ARTWORK="$DEFAULT_COVER"
-            fi
+            FINAL_ARTWORK="$DEFAULT_COVER"
           fi
 
           ENCODED_URL=$(jq -rn --arg x "$FINAL_ARTWORK" '$x|@uri')
@@ -69,32 +64,23 @@ jobs:
             curl -L -s "https://wsrv.nl/?url=${ENCODED_FALLBACK}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
           fi
 
-          # 2. Preuzimanje isjecka prave pjesme sa iTunesa (ili MP3 dzingl ako pjesma nije pronadjena)
-          PREVIEW_URL=$(echo "$ITUNES_JSON" | jq -r '.results[0].previewUrl // empty')
-          AUDIO_READY=0
+          # Snimanje STVARNOG radio streama u trajanju od 22 sekunde
+          echo "Snimam 22 sekunde sa radio streama: $STREAM_URL"
+          ffmpeg -y -i "$STREAM_URL" -t 22 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=21.2:d=0.8" -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a || true
 
-          if [ -n "$PREVIEW_URL" ]; then
-            echo "Pronadjen originalni audio preview pjesme: $PREVIEW_URL"
-            curl -L -s "$PREVIEW_URL" -o preview.m4a
-            if [ -s preview.m4a ]; then
-              ffmpeg -y -i preview.m4a -t 22 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=21.2:d=0.8" -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a && AUDIO_READY=1
-            fi
-          fi
-
-          if [ "$AUDIO_READY" -eq 0 ]; then
+          # Rezerva (ako stream trenutno nije dostupan, koristi MP3 dzingl)
+          if [ ! -s audio.m4a ]; then
             mapfile -t JINGLES < <(find . -maxdepth 2 -iname "*.mp3" | sort)
             NUM_JINGLES=${#JINGLES[@]}
             if [ "$NUM_JINGLES" -gt 0 ]; then
               INDEX=$(( (RUN_NUM - 1) % NUM_JINGLES ))
               JINGLE_FILE="${JINGLES[$INDEX]}"
-              echo "Koristim dzingl ($((INDEX + 1))/$NUM_JINGLES): $JINGLE_FILE"
               ffmpeg -y -i "$JINGLE_FILE" -t 22 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=21.3:d=0.7" -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
             else
               ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 22 -acodec aac -b:a 192k audio.m4a
             fi
           fi
 
-          # 3. Priprema teksta izvodjaca i pjesme
           clean_xml() {
             echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
           }
