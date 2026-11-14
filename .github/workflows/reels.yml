@@ -19,34 +19,62 @@ jobs:
       - name: Preuzimanje jinglova iz repozitorija
         uses: actions/checkout@v4
 
-      - name: Instalacija FFmpeg-a i Roboto fonta
+      - name: Instalacija FFmpeg-a, ImageMagick-a i Roboto fonta
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl jq fonts-roboto
+          sudo apt-get install -y ffmpeg imagemagick libpango1.0-dev curl jq fonts-roboto
 
-      - name: Priprema slike i odabir nasumicnog Radio Begov Han jingla
+      - name: Priprema slike, 3D sjene i modernog TV potpisa
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
         run: |
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
           JINGLE_FILE=$(find . -maxdepth 1 -iname "*.mp3" | shuf -n 1)
-          echo "Odabrani jingle: $JINGLE_FILE"
           ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
 
-      - name: Renderovanje 1080x1920 Full HD Reels videa sa Roboto potpisom
+          # 1. Omot pjesme sa zaobljenim uglovima i dubokom 3D sjenom (Drop Shadow)
+          convert cover_raw.jpg -resize 820x820^ -gravity center -extent 820x820 \
+            \( +clone -alpha extract -draw 'fill black polygon 0,0 0,35 35,0 fill white circle 35,35 35,0' \
+               \( +clone -flip \) -compose Multiply -composite \
+               \( +clone -flop \) -compose Multiply -composite \
+            \) -alpha off -compose CopyOpacity -composite \
+            -bordercolor none -border 3 \
+            \( +clone -background black -shadow 75x28+0+18 \) +swap -background none -layers merge +repage cover_styled.png
+
+          # 2. Gornji "UZIVO NA RADIJU" bedž
+          convert -size 380x76 xc:none \
+            -fill "rgba(15, 15, 22, 0.78)" -stroke "rgba(255, 255, 255, 0.18)" -strokewidth 2 \
+            -draw "roundrectangle 2,2 378,74 38,38" \
+            -fill "#ff2a4b" -draw "circle 62,38 62,50" \
+            -font "Roboto-Bold" -pointsize 25 -fill white \
+            -gravity center -annotate +18+1 "UŽIVO PROGRAM" \
+            live_badge.png
+
+          # 3. Donja moderna kartica (široki razmak slova + zlatna linija + web adresa)
+          convert -size 860x210 xc:none \
+            -fill "rgba(12, 12, 18, 0.82)" -stroke "rgba(255, 255, 255, 0.16)" -strokewidth 2 \
+            -draw "roundrectangle 4,4 856,206 42,42" \
+            -stroke none -fill "#f5b041" -draw "roundrectangle 310,114 550,118 2,2" \
+            \( -background none -gravity center -pango '<span font="Roboto Black 37" foreground="#FFFFFF" letter_spacing="8500">RADIO BEGOV HAN</span>' \) -gravity north -geometry +0+34 -composite \
+            \( -background none -gravity center -pango '<span font="Roboto Bold 22" foreground="#f5b041" letter_spacing="5500">WWW.RADIOBEGOVHAN.COM</span>' \) -gravity south -geometry +0+34 -composite \
+            brand_card.png
+
+      - name: Renderovanje 1080x1920 Full HD Reels videa
         run: |
           ffmpeg -y \
             -loop 1 -i cover_raw.jpg \
+            -loop 1 -i cover_styled.png \
+            -loop 1 -i live_badge.png \
+            -loop 1 -i brand_card.png \
             -i audio.m4a \
             -filter_complex "\
-              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=45:20,eq=brightness=-0.30[bg]; \
-              [0:v]scale=900:900:force_original_aspect_ratio=decrease,pad=908:908:4:4:color=white@0.85[fg]; \
-              [bg][fg]overlay=(W-w)/2:280[tmp1]; \
-              [1:a]showwaves=s=640x130:mode=cline:colors=white@0.90:rate=30[waves]; \
-              [tmp1][waves]overlay=(W-w)/2:1300[tmp2]; \
-              [tmp2]drawtext=fontfile=/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Bold.ttf:text='RADIO BEGOV HAN':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=1520:shadowcolor=black@0.8:shadowx=0:shadowy=3, \
-              drawtext=fontfile=/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Regular.ttf:text='www.radiobegovhan.com':fontcolor=white@0.9:fontsize=32:x=(w-text_w)/2:y=1590:shadowcolor=black@0.8:shadowx=0:shadowy=2,format=yuv420p[v]" \
-            -map "[v]" -map 1:a \
+              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=55:25,eq=brightness=-0.32:saturation=1.25[bg]; \
+              [bg][2:v]overlay=(W-w)/2:135[tmp1]; \
+              [tmp1][1:v]overlay=(W-w)/2:245[tmp2]; \
+              [4:a]showwaves=s=740x110:mode=p2p:colors=0xf5b041@0.95|0xffffff@0.90:rate=30:scale=sqrt[waves]; \
+              [tmp2][waves]overlay=(W-w)/2:1150[tmp3]; \
+              [tmp3][3:v]overlay=(W-w)/2:1310,format=yuv420p[v]" \
+            -map "[v]" -map 4:a \
             -c:v libx264 -preset fast -crf 20 -r 30 \
             -c:a aac -b:a 192k \
             -shortest -movflags +faststart reel.mp4
