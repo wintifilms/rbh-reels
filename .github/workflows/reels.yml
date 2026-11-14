@@ -1,0 +1,84 @@
+name: Radio Begov Han Reels Generator
+
+on:
+  repository_dispatch:
+    types: [create_reel]
+  workflow_dispatch:
+    inputs:
+      artwork_url:
+        description: 'URL slike pjesme'
+        required: true
+      caption:
+        description: 'Opis za Reels'
+        required: true
+
+jobs:
+  build_and_publish_reel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalacija FFmpeg-a i alata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl jq
+
+      - name: Preuzimanje slika i 12 sekundi UZIVO zvuka sa radija
+        env:
+          ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
+        run: |
+          curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
+          curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_logo.png&trim=10&w=320&output=png" -o logo.png
+          
+          # Snima 12 sekundi uživo streama Radio Begov Han (ili generiše tihi ton ako stream trenutno ne odgovori)
+          ffmpeg -y -i "https://stream.radiobegovhan.com/radio/8000/radio.mp3" -t 12 -acodec aac -b:a 192k audio.m4a || \
+          ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 12 -acodec aac audio.m4a
+
+      - name: Renderovanje 1080x1920 Full HD Reels videa
+        run: |
+          ffmpeg -y \
+            -loop 1 -i cover_raw.jpg \
+            -i logo.png \
+            -i audio.m4a \
+            -filter_complex "\
+              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=45:20,eq=brightness=-0.28[bg]; \
+              [0:v]scale=900:900:force_original_aspect_ratio=decrease,pad=908:908:4:4:color=white@0.85[fg]; \
+              [bg][fg]overlay=(W-w)/2:(H-h)/2-60[tmp1]; \
+              [tmp1][1:v]overlay=(W-w)/2:140[tmp2]; \
+              [2:a]showwaves=s=600x140:mode=cline:colors=white@0.85:rate=30[waves]; \
+              [tmp2][waves]overlay=(W-w)/2:1560,format=yuv420p[v]" \
+            -map "[v]" -map 2:a \
+            -c:v libx264 -preset fast -crf 20 -r 30 \
+            -c:a aac -b:a 192k \
+            -t 12 -movflags +faststart reel.mp4
+
+      - name: Objava direktno na Facebook Reels
+        env:
+          PAGE_ID: '1049692904892567'
+          PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          CAPTION: ${{ github.event.client_payload.caption || github.event.inputs.caption }}
+        run: |
+          # Korak 1: Inicijalizacija Reels upload sesije
+          INIT_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
+            -H "Content-Type: application/json" \
+            -d "{\"upload_phase\":\"start\",\"access_token\":\"${PAGE_TOKEN}\"}")
+          
+          VIDEO_ID=$(echo "$INIT_RES" | jq -r '.video_id')
+          UPLOAD_URL=$(echo "$INIT_RES" | jq -r '.upload_url')
+          echo "Video ID: $VIDEO_ID"
+
+          # Korak 2: Slanje MP4 videa
+          FILE_SIZE=$(stat -c%s reel.mp4)
+          curl -s -X POST "$UPLOAD_URL" \
+            -H "Authorization: OAuth ${PAGE_TOKEN}" \
+            -H "offset: 0" \
+            -H "file_size: ${FILE_SIZE}" \
+            --data-binary "@reel.mp4"
+
+          # Korak 3: Objavljivanje Reelsa sa opisom
+          FINISH_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
+            --data-urlencode "access_token=${PAGE_TOKEN}" \
+            --data-urlencode "video_id=${VIDEO_ID}" \
+            --data-urlencode "upload_phase=finish" \
+            --data-urlencode "video_state=PUBLISHED" \
+            --data-urlencode "description=${CAPTION}")
+          
+          echo "Reels status: $FINISH_RES"
