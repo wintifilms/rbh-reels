@@ -24,11 +24,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick curl jq fonts-roboto
 
-      - name: Priprema slike i profesionalne grafike
+      - name: Priprema grafike i zvuka
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
         run: |
-          # 1. Preuzimanje slike pjesme
+          # 1. Preuzimanje omota pjesme
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
           if [ ! -s cover_raw.jpg ]; then
             curl -L -s "https://radiobegovhan.com/assets/radiobegovhan_cover.png" -o cover_raw.jpg
@@ -42,44 +42,32 @@ jobs:
             ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
           fi
 
-          # 3. Omot pjesme - HD čisto sa bijelim okvirom
-          convert cover_raw.jpg -resize 800x800^ -gravity center -extent 800x800 \
-            -bordercolor "#FFFFFF" -border 3 cover_styled.png
+          # 3. Omot pjesme - oštar HD kvadrat (840x840) sa suptilnim bijelim okvirom
+          convert cover_raw.jpg -resize 840x840^ -gravity center -extent 840x840 \
+            -bordercolor "#FFFFFF" -border 2 cover_styled.png
 
-          # 4. Gornji Pro UŽIVO bedž
-          convert -size 460x60 xc:none \
-            -fill "rgba(255, 255, 255, 0.12)" -stroke "rgba(255, 255, 255, 0.25)" -strokewidth 1 \
-            -draw "roundrectangle 0,0 460,60 30,30" \
-            -fill "#FF2A4B" -draw "circle 35,30 35,40" \
-            -font "Roboto-Bold" -pointsize 20 -fill white \
-            -gravity center -annotate +12+0 "UŽIVO PROGRAM" \
-            live_badge.png
-
-          # 5. Prozirno-bijeli elegantni logo naslov u Roboto fontu
-          convert -size 640x70 xc:none \
-            -fill "rgba(255, 255, 255, 0.14)" -stroke "rgba(255, 255, 255, 0.30)" -strokewidth 1 \
-            -draw "roundrectangle 0,0 640,70 35,35" \
-            -font "Roboto-Bold" -pointsize 24 -fill "#FFFFFF" \
-            -gravity center -annotate +0+0 "R A D I O   B E G O V   H A N" \
-            brand_tag.png
+          # 4. Potpuno transparentan natpis (bez ikakvih kutija ili pozadina)
+          convert -size 900x140 xc:none \
+            -font "Roboto-Black" -pointsize 44 -fill "#FFFFFF" \
+            -gravity north -annotate +0+5 "RADIO BEGOV HAN" \
+            -font "Roboto-Bold" -pointsize 22 -fill "#F5B041" \
+            -gravity south -annotate +0+15 "www.radiobegovhan.com" \
+            brand_text.png
 
       - name: Renderovanje 1080x1920 Full HD Reels videa
         run: |
           ffmpeg -y \
-            -loop 1 -i cover_raw.jpg \
+            -f lavfi -i color=c=0x0a0a0e:s=1080x1920:r=30 \
             -loop 1 -i cover_styled.png \
-            -loop 1 -i live_badge.png \
-            -loop 1 -i brand_tag.png \
+            -loop 1 -i brand_text.png \
             -i audio.m4a \
             -filter_complex "\
-              [0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=45:18,eq=brightness=-0.28:saturation=1.25[bg]; \
-              [bg][2:v]overlay=(W-w)/2:190[tmp1]; \
-              [tmp1][1:v]overlay=(W-w)/2:290[tmp2]; \
-              [tmp2][3:v]overlay=(W-w)/2:1130[tmp3]; \
-              [4:a]showwaves=s=880x220:mode=cline:colors=0xffffff@0.95|0xf5b041@0.85:rate=30:scale=sqrt[waves]; \
-              [tmp3][waves]overlay=(W-w)/2:1240,format=yuv420p[v]" \
-            -map "[v]" -map 4:a \
-            -c:v libx264 -preset fast -crf 19 -r 30 \
+              [3:a]showwaves=s=840x120:mode=line:colors=0xffffff@0.85|0xf5b041@0.95:rate=30[waves]; \
+              [0:v][1:v]overlay=(W-w)/2:320[tmp1]; \
+              [tmp1][2:v]overlay=(W-w)/2:1220[tmp2]; \
+              [tmp2][waves]overlay=(W-w)/2:1390,format=yuv420p[v]" \
+            -map "[v]" -map 3:a \
+            -c:v libx264 -preset fast -crf 17 -r 30 \
             -c:a aac -b:a 192k \
             -shortest -movflags +faststart reel.mp4
 
