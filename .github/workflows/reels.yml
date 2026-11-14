@@ -19,55 +19,65 @@ jobs:
       - name: Preuzimanje repozitorija
         uses: actions/checkout@v4
 
-      - name: Instalacija FFmpeg-a, ImageMagick-a i Roboto fontova
+      - name: Instalacija FFmpeg-a, ImageMagick-a i fontova
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg imagemagick curl jq fonts-roboto
+          sudo apt-get install -y ffmpeg imagemagick curl jq fonts-roboto librsvg2-bin
 
-      - name: Priprema grafike i zvuka
+      - name: Priprema grafike i rotacija džinglova
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
+          RUN_NUM: ${{ github.run_number }}
         run: |
-          # 1. Preuzimanje omota pjesme
+          # 1. Preuzimanje omota pjesme u punom kvalitetu
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
           if [ ! -s cover_raw.jpg ]; then
             curl -L -s "https://radiobegovhan.com/assets/radiobegovhan_cover.png" -o cover_raw.jpg
           fi
 
-          # 2. Priprema audio zapisa
-          JINGLE_FILE=$(find . -maxdepth 1 -iname "*.mp3" | shuf -n 1)
-          if [ -z "$JINGLE_FILE" ]; then
-            ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 192k audio.m4a
+          # 2. Sekvencijalna rotacija džinglova (svaki novi Reels uzima sljedeći .mp3 po redu)
+          mapfile -t JINGLES < <(find . -maxdepth 2 -iname "*.mp3" | sort)
+          NUM_JINGLES=${#JINGLES[@]}
+          if [ "$NUM_JINGLES" -gt 0 ]; then
+            INDEX=$(( (RUN_NUM - 1) % NUM_JINGLES ))
+            JINGLE_FILE="${JINGLES[$INDEX]}"
+            echo "Odabrani džingl ($((INDEX + 1))/$NUM_JINGLES): $JINGLE_FILE"
+            ffmpeg -y -i "$JINGLE_FILE" -t 25 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
           else
-            ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
+            echo "Nema pronađenih MP3 džinglova, kreiram tihi audio zapis."
+            ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 192k audio.m4a
           fi
 
-          # 3. Omot pjesme - oštar HD kvadrat (840x840) sa suptilnim bijelim okvirom
-          convert cover_raw.jpg -resize 840x840^ -gravity center -extent 840x840 \
-            -bordercolor "#FFFFFF" -border 2 cover_styled.png
+          # 3. Kristalno oštar HD omot pjesme (880x880) sa tankim poluprovidnim bijelim rubom
+          convert cover_raw.jpg -filter Lanczos -resize 880x880^ -gravity center -extent 880x880 \
+            -bordercolor "rgba(255,255,255,0.22)" -border 2 cover_styled.png
 
-          # 4. Potpuno transparentan natpis (bez ikakvih kutija ili pozadina)
-          convert -size 900x140 xc:none \
-            -font "Roboto-Black" -pointsize 44 -fill "#FFFFFF" \
-            -gravity north -annotate +0+5 "RADIO BEGOV HAN" \
-            -font "Roboto-Bold" -pointsize 22 -fill "#F5B041" \
-            -gravity south -annotate +0+15 "www.radiobegovhan.com" \
-            brand_text.png
+          # 4. Moderan, poluprovidan bijeli SVG potpis (potpuno čista prozirna podloga)
+          cat << 'EOF' > brand_text.svg
+          <svg xmlns="http://www.w3.org/2000/svg" width="960" height="170" viewBox="0 0 960 170">
+            <g text-anchor="middle" font-family="Roboto, Helvetica, Arial, sans-serif">
+              <text x="480" y="65" font-weight="900" font-size="38" fill="#FFFFFF" fill-opacity="0.92" letter-spacing="12">RADIO BEGOV HAN</text>
+              <rect x="390" y="92" width="180" height="2" rx="1" fill="#FFFFFF" fill-opacity="0.40"/>
+              <text x="480" y="136" font-weight="500" font-size="24" fill="#FFFFFF" fill-opacity="0.78" letter-spacing="5">www.radiobegovhan.com</text>
+            </g>
+          </svg>
+          EOF
+          rsvg-convert -w 960 -h 170 brand_text.svg -o brand_text.png
 
       - name: Renderovanje 1080x1920 Full HD Reels videa
         run: |
           ffmpeg -y \
-            -f lavfi -i color=c=0x0a0a0e:s=1080x1920:r=30 \
+            -f lavfi -i color=c=0x000000:s=1080x1920:r=30 \
             -loop 1 -i cover_styled.png \
             -loop 1 -i brand_text.png \
             -i audio.m4a \
             -filter_complex "\
-              [3:a]showwaves=s=840x120:mode=line:colors=0xffffff@0.85|0xf5b041@0.95:rate=30[waves]; \
-              [0:v][1:v]overlay=(W-w)/2:320[tmp1]; \
-              [tmp1][2:v]overlay=(W-w)/2:1220[tmp2]; \
-              [tmp2][waves]overlay=(W-w)/2:1390,format=yuv420p[v]" \
+              [3:a]aformat=channel_layouts=mono,showwaves=s=880x110:mode=cline:rate=30:colors=0xffffff@0.85,format=rgba[waves]; \
+              [0:v][1:v]overlay=(W-w)/2:260:format=auto[tmp1]; \
+              [tmp1][waves]overlay=(W-w)/2:1215:format=auto[tmp2]; \
+              [tmp2][2:v]overlay=(W-w)/2:1375:format=auto,format=yuv420p[v]" \
             -map "[v]" -map 3:a \
-            -c:v libx264 -preset fast -crf 17 -r 30 \
+            -c:v libx264 -profile:v high -level:v 4.2 -preset slow -crf 16 -pix_fmt yuv420p -r 30 \
             -c:a aac -b:a 192k \
             -shortest -movflags +faststart reel.mp4
 
@@ -90,7 +100,7 @@ jobs:
           UPLOAD_URL=$(echo "$INIT_RES" | jq -r '.upload_url // empty')
 
           if [ -z "$VIDEO_ID" ] || [ -z "$UPLOAD_URL" ]; then
-            echo "Greška pri inicijalizaciji Reelsa na Facebooku."
+            echo "Greška pri inicijalizaciji Reelsa na Facebooku: $INIT_RES"
             exit 1
           fi
 
