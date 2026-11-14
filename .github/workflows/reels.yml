@@ -16,23 +16,29 @@ jobs:
   build_and_publish_reel:
     runs-on: ubuntu-latest
     steps:
+      - name: Preuzimanje jinglova iz repozitorija
+        uses: actions/checkout@v4
+
       - name: Instalacija FFmpeg-a i alata
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl jq
 
-      - name: Preuzimanje slika i 12 sekundi UZIVO zvuka sa radija
+      - name: Priprema slika i odabir nasumicnog Radio Begov Han jingla
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
         run: |
           curl -L -s "$ARTWORK_URL" -o cover_raw.jpg
           curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_logo.png&trim=10&w=320&output=png" -o logo.png
           
-          # Snima 12 sekundi uživo streama Radio Begov Han (ili generiše tihi ton ako stream trenutno ne odgovori)
-          ffmpeg -y -i "https://stream.radiobegovhan.com/radio/8000/radio.mp3" -t 12 -acodec aac -b:a 192k audio.m4a || \
-          ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 12 -acodec aac audio.m4a
+          # Nasumično bira jedan od tvoja 4 MP3 jingla iz repozitorija
+          JINGLE_FILE=$(find . -maxdepth 1 -iname "*.mp3" | shuf -n 1)
+          echo "Odabrani jingle: $JINGLE_FILE"
+          
+          # Pretvara odabrani jingle u čist AAC audio (maksimalno do 25 sekundi)
+          ffmpeg -y -i "$JINGLE_FILE" -t 25 -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
 
-      - name: Renderovanje 1080x1920 Full HD Reels videa
+      - name: Renderovanje 1080x1920 Full HD Reels videa sa zvukom i valovima
         run: |
           ffmpeg -y \
             -loop 1 -i cover_raw.jpg \
@@ -43,12 +49,12 @@ jobs:
               [0:v]scale=900:900:force_original_aspect_ratio=decrease,pad=908:908:4:4:color=white@0.85[fg]; \
               [bg][fg]overlay=(W-w)/2:(H-h)/2-60[tmp1]; \
               [tmp1][1:v]overlay=(W-w)/2:140[tmp2]; \
-              [2:a]showwaves=s=600x140:mode=cline:colors=white@0.85:rate=30[waves]; \
+              [2:a]showwaves=s=640x140:mode=cline:colors=white@0.90:rate=30[waves]; \
               [tmp2][waves]overlay=(W-w)/2:1560,format=yuv420p[v]" \
             -map "[v]" -map 2:a \
             -c:v libx264 -preset fast -crf 20 -r 30 \
             -c:a aac -b:a 192k \
-            -t 12 -movflags +faststart reel.mp4
+            -shortest -movflags +faststart reel.mp4
 
       - name: Objava direktno na Facebook Reels
         env:
@@ -56,7 +62,6 @@ jobs:
           PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
           CAPTION: ${{ github.event.client_payload.caption || github.event.inputs.caption }}
         run: |
-          # Korak 1: Inicijalizacija Reels upload sesije
           INIT_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
             -H "Content-Type: application/json" \
             -d "{\"upload_phase\":\"start\",\"access_token\":\"${PAGE_TOKEN}\"}")
@@ -65,7 +70,6 @@ jobs:
           UPLOAD_URL=$(echo "$INIT_RES" | jq -r '.upload_url')
           echo "Video ID: $VIDEO_ID"
 
-          # Korak 2: Slanje MP4 videa
           FILE_SIZE=$(stat -c%s reel.mp4)
           curl -s -X POST "$UPLOAD_URL" \
             -H "Authorization: OAuth ${PAGE_TOKEN}" \
@@ -73,7 +77,6 @@ jobs:
             -H "file_size: ${FILE_SIZE}" \
             --data-binary "@reel.mp4"
 
-          # Korak 3: Objavljivanje Reelsa sa opisom
           FINISH_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
             --data-urlencode "access_token=${PAGE_TOKEN}" \
             --data-urlencode "video_id=${VIDEO_ID}" \
