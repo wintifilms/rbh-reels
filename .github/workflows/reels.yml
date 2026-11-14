@@ -37,7 +37,7 @@ jobs:
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Medium.ttf" -o ~/.local/share/fonts/Montserrat-Medium.ttf
           fc-cache -f -v
 
-      - name: Priprema slike, teksta i snimanja STVARNOG streama
+      - name: Priprema slike, teksta i preuzimanje 320kbps isjecka pjesme
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
           ARTIST_RAW: ${{ github.event.client_payload.artist || github.event.inputs.artist || 'RADIO BEGOV HAN' }}
@@ -64,20 +64,46 @@ jobs:
             curl -L -s "https://wsrv.nl/?url=${ENCODED_FALLBACK}&w=1080&h=1920&fit=cover&output=png" -o bg_raw.png
           fi
 
-          # Snimanje STVARNOG radio streama u trajanju od 22 sekunde
-          echo "Snimam 22 sekunde sa radio streama: $STREAM_URL"
-          ffmpeg -y -i "$STREAM_URL" -t 22 -af "afade=t=in:st=0:d=0.4,afade=t=out:st=21.2:d=0.8" -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a || true
+          # 1. Pretraga originalnog isjecka pjesme (iTunes API -> Deezer API) i konverzija u 320kbps (25 sekundi)
+          SEARCH_QUERY="${ARTIST_RAW} ${SONG_RAW}"
+          ENCODED_QUERY=$(jq -rn --arg x "$SEARCH_QUERY" '$x|@uri')
+          PREVIEW_URL=""
 
-          # Rezerva (ako stream trenutno nije dostupan, koristi MP3 dzingl)
+          if [[ "$ARTIST_RAW" != "RADIO BEGOV HAN" ]] && [[ "$ARTIST_RAW" != "Radio Begov Han" ]]; then
+            echo "Trazim originalni audio preview za: $SEARCH_QUERY"
+            ITUNES_RES=$(curl -s "https://itunes.apple.com/search?term=${ENCODED_QUERY}&media=music&entity=song&limit=1")
+            PREVIEW_URL=$(echo "$ITUNES_RES" | jq -r '.results[0].previewUrl // empty')
+
+            if [ -z "$PREVIEW_URL" ]; then
+              DEEZER_RES=$(curl -s "https://api.deezer.com/search?q=${ENCODED_QUERY}&limit=1")
+              PREVIEW_URL=$(echo "$DEEZER_RES" | jq -r '.data[0].preview // empty')
+            fi
+          fi
+
+          if [ -n "$PREVIEW_URL" ]; then
+            echo "Pronadjen originalni preview pjesme: $PREVIEW_URL"
+            curl -L -s "$PREVIEW_URL" -o preview_raw.tmp
+            if [ -s preview_raw.tmp ]; then
+              ffmpeg -y -i preview_raw.tmp -t 25 -af "afade=t=in:st=0:d=0.5,afade=t=out:st=24.0:d=1.0" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
+            fi
+          fi
+
+          # 2. Rezerva: Snimanje radio streama ako pjesma nema preview na iTunes/Deezeru
+          if [ ! -s audio.m4a ]; then
+            echo "Preview nije pronadjen. Snimam 25 sekundi sa radio streama: $STREAM_URL"
+            ffmpeg -y -i "$STREAM_URL" -t 25 -af "afade=t=in:st=0:d=0.5,afade=t=out:st=24.0:d=1.0" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a || true
+          fi
+
+          # 3. Krajnja rezerva: MP3 dzingl sa GitHuba
           if [ ! -s audio.m4a ]; then
             mapfile -t JINGLES < <(find . -maxdepth 2 -iname "*.mp3" | sort)
             NUM_JINGLES=${#JINGLES[@]}
             if [ "$NUM_JINGLES" -gt 0 ]; then
               INDEX=$(( (RUN_NUM - 1) % NUM_JINGLES ))
               JINGLE_FILE="${JINGLES[$INDEX]}"
-              ffmpeg -y -i "$JINGLE_FILE" -t 22 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=21.3:d=0.7" -acodec aac -b:a 192k -ar 44100 -ac 2 audio.m4a
+              ffmpeg -y -i "$JINGLE_FILE" -t 25 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=24.2:d=0.8" -acodec aac -b:a 320k -ar 44100 -ac 2 audio.m4a
             else
-              ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 22 -acodec aac -b:a 192k audio.m4a
+              ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 25 -acodec aac -b:a 320k audio.m4a
             fi
           fi
 
@@ -123,7 +149,7 @@ jobs:
               [tmp2][eq_final]overlay=(W-w)/2:1430:format=auto,format=yuv420p[v]" \
             -map "[v]" -map 3:a \
             -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
-            -c:a aac -b:a 192k \
+            -c:a aac -b:a 320k \
             -shortest -movflags +faststart reel.mp4
 
       - name: Objava direktno na Facebook Reels
