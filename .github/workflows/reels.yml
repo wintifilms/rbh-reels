@@ -17,6 +17,9 @@ on:
       song:
         description: 'Naziv pjesme'
         required: false
+      collaborator_id:
+        description: 'FB Page ID izvodjaca za Collaborator tag'
+        required: false
       audio_stream_url:
         description: 'Audio Stream URL'
         required: false
@@ -239,11 +242,12 @@ jobs:
               -shortest -movflags +faststart reel.mp4
           fi
 
-      - name: Objava direktno na Facebook Reels
+      - name: Objava direktno na Facebook Reels (sa Collaborator Tagom)
         env:
           PAGE_ID: '1049692904892567'
           PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
           CAPTION: ${{ github.event.client_payload.caption || github.event.inputs.caption }}
+          COLLABORATOR_ID: ${{ github.event.client_payload.collaborator_id || github.event.inputs.collaborator_id || '' }}
         run: |
           if [ -z "$PAGE_TOKEN" ]; then
             echo "GREŠKA: FB_PAGE_TOKEN secret nije podešen!"
@@ -269,11 +273,33 @@ jobs:
             -H "file_size: ${FILE_SIZE}" \
             --data-binary "@reel.mp4"
 
-          FINISH_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
-            --data-urlencode "access_token=${PAGE_TOKEN}" \
-            --data-urlencode "video_id=${VIDEO_ID}" \
-            --data-urlencode "upload_phase=finish" \
-            --data-urlencode "video_state=PUBLISHED" \
-            --data-urlencode "description=${CAPTION}")
+          if [ -n "$COLLABORATOR_ID" ]; then
+            echo "Šaljem Reels sa Collaborator tagom za Page ID: $COLLABORATOR_ID"
+            FINISH_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
+              --data-urlencode "access_token=${PAGE_TOKEN}" \
+              --data-urlencode "video_id=${VIDEO_ID}" \
+              --data-urlencode "upload_phase=finish" \
+              --data-urlencode "video_state=PUBLISHED" \
+              --data-urlencode "description=${CAPTION}" \
+              --data-urlencode "collaborators=[\"${COLLABORATOR_ID}\"]")
+
+            HAS_ERROR=$(echo "$FINISH_RES" | jq -r '.error.message // empty')
+            if [ -n "$HAS_ERROR" ]; then
+              echo "Izvođač ima zaključane kolaboracije, objavljujem standardno..."
+              FINISH_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
+                --data-urlencode "access_token=${PAGE_TOKEN}" \
+                --data-urlencode "video_id=${VIDEO_ID}" \
+                --data-urlencode "upload_phase=finish" \
+                --data-urlencode "video_state=PUBLISHED" \
+                --data-urlencode "description=${CAPTION}")
+            fi
+          else
+            FINISH_RES=$(curl -s -X POST "https://graph.facebook.com/v22.0/${PAGE_ID}/video_reels" \
+              --data-urlencode "access_token=${PAGE_TOKEN}" \
+              --data-urlencode "video_id=${VIDEO_ID}" \
+              --data-urlencode "upload_phase=finish" \
+              --data-urlencode "video_state=PUBLISHED" \
+              --data-urlencode "description=${CAPTION}")
+          fi
           
           echo "Reels status: $FINISH_RES"
