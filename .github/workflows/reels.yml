@@ -34,18 +34,18 @@ jobs:
           curl -L -s "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Medium.ttf" -o ~/.local/share/fonts/Montserrat-Medium.ttf
           fc-cache -f -v
 
-      - name: Priprema 100% ciste Full-HD slike, teksta i dzinglova
+      - name: Priprema cijele slike (bez rezanja), teksta i dzinglova
         env:
           ARTWORK_URL: ${{ github.event.client_payload.artwork_url || github.event.inputs.artwork_url }}
           ARTIST_RAW: ${{ github.event.client_payload.artist || github.event.inputs.artist || 'RADIO BEGOV HAN' }}
           SONG_RAW: ${{ github.event.client_payload.song || github.event.inputs.song || 'Tvoj ritam, tvoja muzika' }}
           RUN_NUM: ${{ github.run_number }}
         run: |
-          # 1. Preuzimanje ciste slike u 1200x2133 za gladak Full-Screen prikaz (bez ikakvog zatamnjenja)
+          # 1. Preuzimanje CIJELE slike u punoj sirini 1080x1080 (fit=contain - NISTA SE NESIJECE)
           ENCODED_URL=$(jq -rn --arg x "$ARTWORK_URL" '$x|@uri')
-          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1200&h=2133&fit=cover&a=attention&output=jpg&q=100" -o bg_full.jpg
-          if [ ! -s bg_full.jpg ]; then
-            curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_cover.png&w=1200&h=2133&fit=cover&output=jpg&q=100" -o bg_full.jpg
+          curl -L -s "https://wsrv.nl/?url=${ENCODED_URL}&w=1080&h=1080&fit=contain&bg=000000&output=png" -o cover_full.png
+          if [ ! -s cover_full.png ]; then
+            curl -L -s "https://wsrv.nl/?url=https://radiobegovhan.com/assets/radiobegovhan_cover.png&w=1080&h=1080&fit=contain&bg=000000&output=png" -o cover_full.png
           fi
 
           # 2. Rotacija svih MP3 dzinglova po redu za svaki novi Reels
@@ -60,41 +60,42 @@ jobs:
             ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 22 -acodec aac -b:a 192k audio.m4a
           fi
 
-          # 3. Priprema teksta izvodjaca i pjesme
+          # 3. Priprema teksta izvodjaca i pjesme (BEZ www.radiobegovhan.com)
           clean_xml() {
             echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
           }
           ARTIST_UPPER=$(echo "$ARTIST_RAW" | tr '[:lower:]' '[:upper:]' | cut -c 1-30)
-          SONG_TITLE=$(echo "$SONG_RAW" | cut -c 1-40)
+          SONG_TITLE=$(echo "$SONG_RAW" | cut -c 1-42)
 
           ARTIST_SAFE=$(clean_xml "$ARTIST_UPPER")
           SONG_SAFE=$(clean_xml "$SONG_TITLE")
 
-          # 4. Kreiranje 100% prozirnog SVG-a samo sa modernim poluprovidnim bijelim tekstom (BEZ ZATAMNJENJA I BEZ POZADINA)
           cat << EOF > overlay.svg
           <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
             <g text-anchor="middle" font-family="Montserrat, sans-serif">
-              <text x="540" y="1310" font-weight="800" font-size="44" fill="#FFFFFF" fill-opacity="0.92" letter-spacing="4">${ARTIST_SAFE}</text>
-              <text x="540" y="1370" font-weight="500" font-size="30" fill="#FFFFFF" fill-opacity="0.82" letter-spacing="2">${SONG_SAFE}</text>
-              <text x="540" y="1535" font-weight="500" font-size="22" fill="#FFFFFF" fill-opacity="0.78" letter-spacing="6">www.radiobegovhan.com</text>
+              <text x="540" y="1335" font-weight="800" font-size="42" fill="#FFFFFF" fill-opacity="0.95" letter-spacing="4">${ARTIST_SAFE}</text>
+              <text x="540" y="1395" font-weight="500" font-size="29" fill="#FFFFFF" fill-opacity="0.80" letter-spacing="2">${SONG_SAFE}</text>
             </g>
           </svg>
           EOF
 
           rsvg-convert -w 1080 -h 1920 overlay.svg -o overlay.png
 
-      - name: Renderovanje 1080x1920 Full HD Reelsa
+      - name: Renderovanje 1080x1920 Full HD Reelsa sa modernim frekvencijskim ekvilajzerom
         run: |
           ffmpeg -y \
-            -loop 1 -r 30 -i bg_full.jpg \
+            -f lavfi -i color=c=0x000000:s=1080x1920:r=30 \
+            -loop 1 -r 30 -i cover_full.png \
             -loop 1 -r 30 -i overlay.png \
             -i audio.m4a \
             -filter_complex "\
-              [0:v]scale=1200:2133,crop=1080:1920:'(iw-ow)/2':'(ih-oh)/2 + 40*sin(t/3.5)'[bg_clean]; \
-              [2:a]aformat=channel_layouts=mono,showwaves=s=640x80:mode=cline:rate=30:colors=0xffffff@0.85,format=rgba[waves]; \
-              [bg_clean][1:v]overlay=0:0:format=auto[tmp1]; \
-              [tmp1][waves]overlay=(W-w)/2:1405:format=auto,format=yuv420p[v]" \
-            -map "[v]" -map 2:a \
+              [3:a]showfreqs=s=860x130:mode=bar:ascale=cbrt:fscale=log:win_size=2048:colors=0xffffff@0.90,format=rgba,split[eq_sharp][eq_blur]; \
+              [eq_blur]gblur=sigma=8[eq_glow]; \
+              [eq_glow][eq_sharp]overlay=0:0:format=auto[eq_final]; \
+              [0:v][1:v]overlay=0:160:format=auto[tmp1]; \
+              [tmp1][2:v]overlay=0:0:format=auto[tmp2]; \
+              [tmp2][eq_final]overlay=(W-w)/2:1430:format=auto,format=yuv420p[v]" \
+            -map "[v]" -map 3:a \
             -c:v libx264 -profile:v high -level:v 4.2 -preset medium -crf 16 -pix_fmt yuv420p -r 30 \
             -c:a aac -b:a 192k \
             -shortest -movflags +faststart reel.mp4
